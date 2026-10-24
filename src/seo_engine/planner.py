@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .answers import RecordedAnswer, approval_problems, best_match
-from .opportunities import KIND_LABELS, Opportunity
+from .opportunities import KIND_LABELS, Opportunity, norm_url
 from .text import slugify
 
 SNIPPET_COOLDOWN_DAYS = 28
@@ -109,7 +109,7 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
         elif not opp.managed:
             line.verdict, line.detail = "skip", "not built by seo-engine, so reported and never edited"
         elif opp.kind == "low_ctr":
-            rec = next((r for r in records.values() if r.get("url") == opp.page), {})
+            rec = next((r for r in records.values() if norm_url(r.get("url", "")) == norm_url(opp.page)), {})
             last = rec.get("snippet_on")
             if last and (today - dt.date.fromisoformat(last)).days < SNIPPET_COOLDOWN_DAYS:
                 line.verdict, line.detail = "watch", "description changed on %s; waiting for data" % last
@@ -149,7 +149,7 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
     if action is None and snippets:
         opp, line = snippets[0]
         line.chosen = True
-        slug = next((s for s, r in records.items() if r.get("url") == opp.page), "")
+        slug = next((s for s, r in records.items() if norm_url(r.get("url", "")) == norm_url(opp.page)), "")
         action = Action("snippet", slug, "low CTR at position %.1f" % opp.position, opportunity=opp)
     if action is None and not note:
         note = "nothing to do: no approved recording is waiting and every page passes"

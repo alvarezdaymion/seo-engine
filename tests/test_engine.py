@@ -254,3 +254,11 @@ def test_a_merge_by_a_person_does_not_skip_the_approval_check(tmp_path):
     r, _ = run(tmp_path, gh=review, review=REVIEW)
     assert r["status"] == "held" and "before publishing" in r["blockers"][0]
     assert not page_file(tmp_path).exists()
+
+
+def test_a_snippet_finds_its_page_when_search_console_drops_the_trailing_slash(tmp_path):
+    write_answer(tmp_path / "answers")
+    run(tmp_path)
+    rows = daily("faucet fixed in an hour", "/answers/%s" % SLUG, 1200, 6, 3.0, END)  # no trailing slash
+    r, _ = run(tmp_path, rows=rows, today=TODAY + dt.timedelta(days=1))
+    assert r["action"]["kind"] == "snippet" and r["action"]["slug"] == SLUG and r["status"] == "published"
