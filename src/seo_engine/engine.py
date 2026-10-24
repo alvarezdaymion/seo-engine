@@ -175,7 +175,7 @@ class Engine:
                 continue
             res = live_check(expected_for(page, self.fetch_url(page)), fetch)
             rec["last_check"] = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
-            out.append({"slug": slug, "url": page.canonical, "ok": res.ok, "problems": res.problems})
+            out.append({"slug": slug, "url": res.url, "ok": res.ok, "problems": res.problems})
             if not res.ok:
                 failing.append(slug)
         self.r["live_gate"] = out
@@ -325,12 +325,6 @@ class Engine:
         if page is None:
             self.blocker("repair %s: the published build is missing from state/" % a.slug)
             return
-        gates = content_gates(page, self.answers, check(page, self.pack))
-        self.r["action"]["gates"] = [g.to_json() for g in gates]
-        if failed(gates):
-            self.r["action"]["status"] = self.r["status"] = "held"
-            self.blocker("repair %s held: %s" % (a.slug, "; ".join(g.detail for g in failed(gates))))
-            return
         if self.publisher().target == "git":
             self.r["action"]["status"] = "reported"
             self.blocker("%s fails its live check; the site deploys from the repo, so fix it there" % rec.get("url"))
@@ -341,6 +335,14 @@ class Engine:
 
     def publish(self, page: Page, rec: dict[str, Any], *, new: bool, rollback: bool = True) -> None:
         act, lc = self.r["action"], self.cfg["livecheck"]
+        gates = content_gates(page, self.answers, check(page, self.pack))  # again, right before anything goes out
+        act["publish_gates"] = [g.to_json() for g in gates]
+        if failed(gates):
+            reason = "; ".join("%s: %s" % (g.name, g.detail) for g in failed(gates))
+            rec.update(status="held", reason=reason)
+            act["status"] = self.r["status"] = "held"
+            self.blocker("held %s before publishing: %s" % (page.slug, reason))
+            return
         publisher = self.publisher()
         files = sorted(publisher.files(page))
         if self.cfg["publish"]["mode"] != "live":
@@ -354,11 +356,11 @@ class Engine:
         res = check_until(expected_for(page, self.fetch_url(page)), self.deps.fetch or fetch_any,
                           int(lc["attempts"]), float(lc["wait_seconds"]), self.deps.sleep)
         act["live"] = res.to_json()
-        check = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
+        last_check = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
         if res.ok:
-            first = not rec.get("live")
-            rec.update(status="published", live=True, reason="", last_check=check, updated_on=self.today.isoformat(),
-                       published_on=rec.get("published_on") or self.today.isoformat())
+            first, today = not rec.get("live"), self.today.isoformat()
+            rec.update(status="published", live=True, reason="", last_check=last_check, updated_on=today,
+                       published_on=rec.get("published_on") or today)
             self.state.store_page(page)
             self.state.log({"event": "published", "slug": page.slug, "url": page.canonical, "new": new and first,
                             "day": self.today.isoformat(), "action": pub.action})
@@ -366,14 +368,14 @@ class Engine:
             return
         problems = "; ".join(res.problems)
         if publisher.target == "git":
-            rec.update(status="merged", reason="merged but not live yet: %s" % problems, last_check=check)
+            rec.update(status="merged", reason="merged but not live yet: %s" % problems, last_check=last_check)
             act["status"] = self.r["status"] = "not live"
             self.blocker("%s is merged but not live yet: %s" % (page.canonical, problems))
             return
         undo = publisher.rollback(pub) if rollback else "left as published (the page was already failing)"
         act["rollback"] = undo
         rec.update(status="rolled_back" if rollback else rec.get("status", "published"),
-                   reason="live check failed: %s" % problems, last_check=check)
+                   reason="live check failed: %s" % problems, last_check=last_check)
         act["status"] = self.r["status"] = "rolled back" if rollback else "still failing"
         self.blocker("live check failed for %s: %s; %s" % (page.canonical, problems, undo))
         self.state.log({"event": "rolled_back" if rollback else "repair_failed", "slug": page.slug,

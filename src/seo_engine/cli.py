@@ -34,6 +34,10 @@ def _num(v: float) -> str:
     return format(int(round(v)), ",")
 
 
+def _where(url: str) -> str:
+    return url if url.startswith(("http://", "https://")) else rel(url)
+
+
 def _plural(n: int, word: str) -> str:
     return "%d %s%s" % (n, word, "" if n == 1 else "s")
 
@@ -67,7 +71,8 @@ def summary(r: dict[str, Any]) -> str:
     if plan.get("note"):
         out.append("  " + plan["note"])
     for g in r.get("live_gate") or []:
-        out.append("Live check %s: %s" % (g["url"], "passing" if g["ok"] else "FAILING: " + "; ".join(g["problems"])))
+        state = "passing" if g["ok"] else "FAILING: " + "; ".join(g["problems"])
+        out.append("Live check %s: %s" % (_where(g["url"]), state))
     out += _action(r.get("action"))
     rep = r.get("report")
     if rep:
@@ -132,7 +137,7 @@ def _action(a: dict[str, Any] | None) -> list[str]:
         out.append("Publish: %s %s" % (p["status"], where))
     lv = a.get("live")
     if lv:
-        out.append("Live check %s: %s" % (lv["url"], "passed (%s)" % ", ".join(lv["passed"]) if lv["ok"]
+        out.append("Live check %s: %s" % (_where(lv["url"]), "passed (%s)" % ", ".join(lv["passed"]) if lv["ok"]
                                           else "FAILED: " + "; ".join(lv["problems"])))
     if a.get("rollback"):
         out.append("Rollback: %s" % a["rollback"])
@@ -141,16 +146,41 @@ def _action(a: dict[str, Any] | None) -> list[str]:
     return out
 
 
+def load_env(path: Path) -> list[str]:
+    """Read KEY=value lines from a .env file into the environment. Variables already set win."""
+    loaded = []
+    if not path.is_file():
+        return loaded
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        value = value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else value
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def load_config(path: str) -> config_mod.Config:
+    """The config, after loading the .env file that sits next to it."""
+    load_env(Path(path).resolve().parent / ".env")
+    return config_mod.load(path)
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from .demo import run_demo
 
     result, cfg, server = run_demo(Path(args.dir), port=args.port if args.serve else 0)
-    print("seo-engine demo: Example Home Services, a fictional company. Synthetic data, no keys, no network.\n")
+    print("seo-engine demo: Example Home Services, a fictional company. Synthetic data and an in-memory GitHub;"
+          " no keys, no network.\n")
     print(summary(result))
     a = result.get("action") or {}
     if args.serve and server:
         path = cfg["site"]["page_path"].format(slug=a.get("slug", ""))
-        print("\nServing the demo site at http://127.0.0.1:%d%s (Ctrl-C to stop)" % (server.server_address[1], path))
+        print("\nServing the demo site at http://127.0.0.1:%d%s (Ctrl-C to stop)" % (server.server_address[1], path),
+              flush=True)
         try:
             threading.Event().wait()
         except KeyboardInterrupt:
@@ -185,7 +215,7 @@ def _env(*names: str) -> tuple[bool, str]:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    cfg = config_mod.load(args.config)
+    cfg = load_config(args.config)
     problems: list[str] = []
     print("Config OK: %s" % rel(Path(args.config).resolve()))
     print("Site: %s, pages at %s" % (cfg["site"]["name"], cfg["site"]["base_url"] + cfg["site"]["page_path"]))
@@ -196,7 +226,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         creds = os.environ.get("GSC_SERVICE_ACCOUNT_FILE") or os.environ.get("GSC_ACCESS_TOKEN")
         ok = bool(creds) and bool(s["site_url"])
         state = "env set" if ok else "needs site_url and GSC_SERVICE_ACCOUNT_FILE (or GSC_ACCESS_TOKEN)"
-    print("Search: %s %s: %s" % (s["source"], s["site_url"] or s["csv"], state))
+    where = rel(cfg.path(s["csv"])) if s["source"] == "csv" else s["site_url"]
+    print("Search: %s %s: %s" % (s["source"], where, state))
     if not ok:
         problems.append("search")
     answers, errors = load_answers(cfg.path(cfg["answers"]["dir"]))
@@ -208,8 +239,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("  skipped: %s" % e)
     try:
         pack = load_rules(cfg.path(cfg["claims"]["rules"]))
-        print('Rule pack %s: "%s", %d rules, %d disclosure(s)' % (rel(cfg.path(cfg["claims"]["rules"])), pack.name,
-                                                                 len(pack.rules), len(pack.disclosures)))
+        counts = "%s, %s" % (_plural(len(pack.rules), "rule"), _plural(len(pack.disclosures), "disclosure"))
+        print('Rule pack %s: "%s", %s' % (rel(cfg.path(cfg["claims"]["rules"])), pack.name, counts))
     except Exception as e:
         print("Rule pack: %s" % str(e)[:200])
         problems.append("rules")
@@ -252,7 +283,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
-    cfg = config_mod.load(args.config)
+    cfg = load_config(args.config)
     if not is_slug(args.id):
         print("answer ids are lowercase letters, digits and dashes")
         return 1
@@ -271,14 +302,14 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    result = Engine(config_mod.load(args.config)).run()
+    result = Engine(load_config(args.config)).run()
     if not args.quiet:
         print(summary(result))
     return 1 if result["blockers"] else 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    engine = Engine(config_mod.load(args.config))
+    engine = Engine(load_config(args.config))
     engine.run(execute=False, report="off")
     meta = engine.write_report(mark=False, send=args.send)
     print(meta["text"])

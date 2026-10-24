@@ -241,3 +241,16 @@ def test_the_webhook_needs_https_and_never_leaks_its_url(monkeypatch):
     with pytest.raises(RuntimeError) as e:
         send_webhook("hi", url="https://hooks.example.com/secret-path", transport=lambda *a: (500, b""))
     assert "secret-path" not in str(e.value) and "500" in str(e.value)
+
+
+def test_a_merge_by_a_person_does_not_skip_the_approval_check(tmp_path):
+    write_answer(tmp_path / "answers")
+    fake, review = github()
+    run(tmp_path, gh=review, review=REVIEW)
+    fake.route("PUT", "/pulls/1/merge", {"sha": fake.pulls[1]["head"]["sha"], "merge_method": "squash"}, {})
+    meta = json.loads((tmp_path / "answers" / "ra-100.json").read_text())
+    meta["approval"]["status"] = "withdrawn"
+    (tmp_path / "answers" / "ra-100.json").write_text(json.dumps(meta))
+    r, _ = run(tmp_path, gh=review, review=REVIEW)
+    assert r["status"] == "held" and "before publishing" in r["blockers"][0]
+    assert not page_file(tmp_path).exists()

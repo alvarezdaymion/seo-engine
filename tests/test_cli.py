@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -66,3 +67,19 @@ def test_the_example_config_loads_and_matches_the_defaults():
 def test_config_validation(data, message):
     with pytest.raises(ValueError, match=message.replace("[", r"\[").replace("{", r"\{")):
         config.from_dict(data)
+
+
+def test_dotenv_next_to_the_config_is_loaded_without_overriding(tmp_path, monkeypatch):
+    from seo_engine.cli import load_env
+    monkeypatch.setenv("SEO_ENGINE_TEST_KEEP", "from-shell")
+    monkeypatch.delenv("SEO_ENGINE_TEST_NEW", raising=False)
+    monkeypatch.delenv("SEO_ENGINE_TEST_EMPTY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text('# comment\nSEO_ENGINE_TEST_NEW="quoted value"\nSEO_ENGINE_TEST_KEEP=from-file\n'
+                   'SEO_ENGINE_TEST_EMPTY=\nnot a pair\n')
+    try:
+        assert load_env(env) == ["SEO_ENGINE_TEST_NEW"]
+        assert os.environ["SEO_ENGINE_TEST_NEW"] == "quoted value"
+        assert os.environ["SEO_ENGINE_TEST_KEEP"] == "from-shell"
+    finally:
+        os.environ.pop("SEO_ENGINE_TEST_NEW", None)

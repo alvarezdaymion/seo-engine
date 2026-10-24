@@ -147,7 +147,7 @@ class MemoryGitHub:
                              "head": {"ref": data["head"], "sha": self.refs[data["head"]]},
                              "base": {"ref": data["base"]},
                              "mergeable": True, "mergeable_state": "clean",
-                             "html_url": "https://github.com/%s/pull/%d" % (self.repo, n)}
+                             "html_url": "memory://%s/pull/%d" % (self.repo, n)}
             return 201, self.pulls[n]
         if seg[0] == "pulls" and len(seg) >= 2 and int(seg[1]) in self.pulls:
             pr = self.pulls[int(seg[1])]
