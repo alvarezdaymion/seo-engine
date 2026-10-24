@@ -317,3 +317,90 @@ def test_initial_live_check_exception_is_isolated_and_reporting_continues(tmp_pa
     monkeypatch.setattr("seo_engine.engine.live_check", broken)
     result, _ = run(tmp_path, mode="force")
     assert not result["live_gate"][0]["ok"] and "report" in result
+
+
+def test_corrupt_managed_body_is_repaired_from_its_saved_build(tmp_path):
+    write_answer(tmp_path / "answers")
+    assert run(tmp_path)[0]["status"] == "published"
+    path = page_file(tmp_path)
+    original = path.read_text()
+    path.write_text(original.replace("usually means", "never means"))
+    result, _ = run(tmp_path, mode="force")
+    assert result["action"]["kind"] == "repair" and result["status"] == "published"
+    assert path.read_text() == original and not result["blockers"]
+
+
+def test_managed_ownership_does_not_transfer_to_a_different_site_folder(tmp_path):
+    write_answer(tmp_path / "answers")
+    run(tmp_path)
+    path = tmp_path / "other-site" / "answers" / SLUG / "index.html"
+    path.parent.mkdir(parents=True)
+    path.write_text("Unmanaged content.")
+    result, _ = run(tmp_path, static={"dir": "other-site"})
+    assert result["blockers"] and path.read_text() == "Unmanaged content."
+
+
+def test_managed_ownership_does_not_follow_a_retargeted_symlink(tmp_path):
+    write_answer(tmp_path / "answers")
+    run(tmp_path)
+    manual = tmp_path / "site" / "manual.html"
+    manual.write_text("Unmanaged content.")
+    path = page_file(tmp_path)
+    path.unlink()
+    path.symlink_to(manual)
+    result, _ = run(tmp_path)
+    assert result["blockers"] and manual.read_text() == "Unmanaged content."
+
+
+@pytest.mark.parametrize("change", ["role", "queries"])
+def test_closing_an_old_build_does_not_reject_a_new_approved_revision(tmp_path, change):
+    answer = write_answer(tmp_path / "answers")
+    fake, review = github()
+    assert run(tmp_path, gh=review, review=REVIEW)[0]["status"] == "in_review"
+    meta = json.loads(answer.path.read_text())
+    if change == "role":
+        meta["speaker"]["role"] = "Technician"
+    else:
+        meta["target_queries"] = ["synthetic replacement question"]
+    answer.path.write_text(json.dumps(meta))
+    approve(answer.path, "owner", TODAY)
+    fake.pulls[1]["state"] = "closed"
+    assert run(tmp_path, gh=review, review=REVIEW)[0]["status"] == "closed"
+    result, _ = run(tmp_path, gh=review, review=REVIEW)
+    assert result["status"] == "in_review" and len(fake.pulls) == 2
+    assert result["action"]["kind"] == "build"
+
+
+def test_closing_a_legacy_pending_build_still_holds_the_same_revision(tmp_path):
+    write_answer(tmp_path / "answers")
+    fake, review = github()
+    run(tmp_path, gh=review, review=REVIEW)
+    path = tmp_path / "state" / "pages.json"
+    records = json.loads(path.read_text())
+    records[SLUG].pop("pending_key", None)
+    path.write_text(json.dumps(records))
+    fake.pulls[1]["state"] = "closed"
+    assert run(tmp_path, gh=review, review=REVIEW)[0]["status"] == "closed"
+    result, _ = run(tmp_path, gh=review, review=REVIEW)
+    assert result["action"] is None and len(fake.pulls) == 1
+
+
+@pytest.mark.parametrize("damage", ["truncated", "missing"])
+def test_bad_saved_build_does_not_stop_other_live_checks_or_reporting(tmp_path, damage):
+    write_answer(tmp_path / "answers")
+    write_answer(tmp_path / "answers", "ra-200", question="Why does a tap squeak?",
+                 transcript="A worn seal can make the tap squeak when the handle turns.")
+    assert run(tmp_path)[0]["status"] == "published"
+    assert run(tmp_path, today=TODAY + dt.timedelta(days=1))[0]["status"] == "published"
+    build = tmp_path / "state" / "pages" / (SLUG + ".json")
+    if damage == "missing":
+        build.unlink()
+    else:
+        build.write_text("{")
+    result, _ = run(tmp_path, today=TODAY + dt.timedelta(days=2), mode="force")
+    assert result["blockers"] and "report" in result
+    assert len(result["live_gate"]) == 2
+    assert any(check["ok"] for check in result["live_gate"])
+    saved = json.loads((tmp_path / "state" / "last-run.json").read_text())
+    assert saved["blockers"] and saved["today"] == (TODAY + dt.timedelta(days=2)).isoformat()
+    assert not build.exists() if damage == "missing" else build.read_text() == "{"

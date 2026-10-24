@@ -70,7 +70,9 @@ class ShopifyPublisher(ShopifyPreview):
         self.http = Http({"X-Shopify-Access-Token": token}, transport)
         self.save_recovery: Callable[[dict[str, Any]], None] = lambda undo: None
         self.before_write: Callable[[], None] = lambda: None
+        self.before_restore: Callable[[dict[str, Any]], None] | None = None
         self.recovering = False
+        self.recovery_undo: dict[str, Any] = {}
 
     def find(self, handle: str) -> dict[str, Any] | None:
         data = self.http.get(self.base + "/pages.json",
@@ -164,10 +166,12 @@ class ShopifyPublisher(ShopifyPreview):
 
     def rollback(self, published: Published) -> str:
         self.recovering = True
+        self.recovery_undo = published.undo
         try:
             return self._rollback(published)
         finally:
             self.recovering = False
+            self.recovery_undo = {}
 
     def _rollback(self, published: Published) -> str:
         u = published.undo
@@ -192,6 +196,8 @@ class ShopifyPublisher(ShopifyPreview):
         seo = {k: u["seo"][k][1] if k in u["seo"] else "" for k in SEO_KEYS}
         self._verify_hidden(pid, u["handle"], u["title"], u["body_html"], seo)
         if u["published"]:
+            if self.before_restore is None:
+                return "restored the previous title, body and SEO fields; kept hidden without a previous build gate"
             self._write("PUT", "%s/pages/%d.json" % (self.base, pid), {"page": {"id": pid, "published": True}})
         return "restored the previous title, body and SEO fields"
 
@@ -210,6 +216,10 @@ class ShopifyPublisher(ShopifyPreview):
         )
         if not any(allowed):
             raise PermissionError("refused write: %s %s" % (method, url.split("?")[0]))
-        if not self.recovering:
+        if self.recovering and (body.get("page") or {}).get("published") is True:
+            if self.before_restore is None:
+                raise RuntimeError("previous build release gates are unavailable; kept hidden")
+            self.before_restore(self.recovery_undo)
+        elif not self.recovering:
             self.before_write()
         return self.http.request(method, url, json_body=body)

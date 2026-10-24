@@ -313,12 +313,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    engine = Engine(load_config(args.config))
-    engine.run(execute=False, report="off")
-    meta = engine.write_report(mark=False, send=args.send)
-    print(meta["text"])
-    print("Written to %s%s" % (rel(meta["path"]), ", and sent" if meta["sent"] else ""))
-    return 0
+    try:
+        engine = Engine(load_config(args.config))
+    except (RuntimeError, OSError, ValueError) as e:
+        print("Report unavailable: %s" % str(e)[:200])
+        return 1
+    result = engine.run(execute=False, report="force", send_report=args.send)
+    meta = result.get("report")
+    if meta:
+        print(meta["text"])
+        print("Written to %s%s" % (rel(meta["path"]), ", and sent" if meta["sent"] else ""))
+    for blocker in result["blockers"]:
+        print("Report blocker: " + blocker)
+    return 1 if result["blockers"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:

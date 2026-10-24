@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,7 +124,17 @@ class CsvSource:
             raise RuntimeError("search CSV not found: %s" % self.path)
         rows = []
         with self.path.open(newline="") as f:
-            for rec in csv.DictReader(f):
-                rows.append(Row(rec["date"], rec["query"], rec["page"], float(rec["clicks"] or 0),
-                                float(rec["impressions"] or 0), float(rec["position"] or 0)))
+            reader = csv.DictReader(f)
+            for rec in reader:
+                metrics = []
+                for key in ("clicks", "impressions", "position"):
+                    try:
+                        number = float(rec.get(key))
+                        if not math.isfinite(number) or number < 0:
+                            raise ValueError("invalid metric")
+                    except (TypeError, ValueError):
+                        raise ValueError("search CSV row %d: %s needs an explicit finite nonnegative number"
+                                         % (reader.line_num, key)) from None
+                    metrics.append(number)
+                rows.append(Row(rec["date"], rec["query"], rec["page"], *metrics))
         return SearchRows(between(rows, start, end))

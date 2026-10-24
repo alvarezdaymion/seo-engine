@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import urllib.parse
 from typing import Any
 
 from .answers import RecordedAnswer, approval_problems
@@ -117,14 +118,26 @@ def build(cfg: Any, rows: list[Row], latest: dt.date | None, today: dt.date, rec
     return "\n".join(out) + "\n", meta
 
 
+def webhook_url(url: str | None = None) -> str:
+    url = url or os.environ.get("SEO_ENGINE_REPORT_WEBHOOK", "")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (parsed.scheme == "https" and bool(parsed.hostname) and parsed.port != 0
+                 and not parsed.username and not parsed.password and not parsed.fragment
+                 and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError("set SEO_ENGINE_REPORT_WEBHOOK to a valid https URL")
+    return url
+
+
 def send_webhook(text: str, payload_key: str = "text", url: str | None = None,
                  transport: Transport | None = None) -> None:
-    url = url or os.environ.get("SEO_ENGINE_REPORT_WEBHOOK", "")
-    if not url.startswith("https://"):
-        raise RuntimeError("set SEO_ENGINE_REPORT_WEBHOOK to an https URL")
+    url = webhook_url(url)
     try:
         Http(transport=transport).request("POST", url, json_body={payload_key: text})
     except HttpError as e:  # the webhook URL is a secret, so it never goes into the message
         raise RuntimeError("the report webhook returned HTTP %d" % e.status) from None
-    except OSError as e:
-        raise RuntimeError("the report webhook could not be reached (%s)" % type(e).__name__) from None
+    except Exception as e:
+        raise RuntimeError("the report webhook request failed (%s)" % type(e).__name__) from None

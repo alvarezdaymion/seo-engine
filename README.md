@@ -81,7 +81,7 @@ Weekly report: seo-engine-demo/reports/2026-03-02.md
 5. **Review, merge and publish**, each behind its own switch (below). After a publish the page is fetched and checked again, with retries for a CDN or deploy. Static and Shopify changes are rolled back if it still fails. For Git deployments, the merge deploys immediately and recovery requires a manual revert.
 6. **Report.** On the report weekday (Thursday by default, when last week's final data is usually in), the weekly report is written to `reports/` and sent if delivery is on.
 
-A failing step is recorded as a blocker and never stops the steps after it. `seo-engine run` exits 1 when the run has a blocker, so a scheduler can alert on it. Runs are serialized with `state/run.lock`; an interrupted run can leave a lock that must be reconciled before another run.
+A failing step is recorded as a blocker and never stops the steps after it. A missing or corrupt saved page build blocks its publication while other live checks and the weekly report continue; the damaged build is preserved for recovery. `seo-engine run` exits 1 when the run has a blocker, so a scheduler can alert on it. Runs and report commands hold `state/run.lock` through collection and delivery; an interrupted run can leave a lock that must be reconciled before another run. `seo-engine report --send` refuses delivery when initialization or lock acquisition fails and exits 1 on blockers.
 
 ## Recorded answers
 
@@ -122,7 +122,7 @@ A rule pack is a TOML file; `seo-engine init` copies [the example](src/seo_engin
 | `[[needs_source]]` phrases or regex | a percentage, "studies show", "required by law" | Cite a source approved with the recording whose `supports` words are in the sentence, or remove the sentence |
 | `[[disclosures]]` | "This answer is general information..." | Add it |
 
-Phrases match whole words and ignore case. The check includes the description, byline, source titles and disclosures. A banned phrase in a field that cannot be safely removed, such as the question or speaker role, holds the page. Removing an answer sentence also rebuilds its description, including a truncated description.
+Phrases match whole words and ignore case. The check includes the description, byline, source titles and disclosures. A banned phrase in a field that cannot be safely removed, such as the question or speaker role, holds the page. Body findings remain actionable when the same claim appears in the description. Removing an answer sentence also rebuilds its description; descriptions retain their source sentences so a truncated description can inherit an approved citation without exempting altered wording.
 
 ## Switches and gates
 
@@ -138,7 +138,11 @@ In dry-run the engine still builds and checks the page and writes it to `state/d
 
 **Before a merge**, every one of these must pass: `recording` (approved, same recording revision the page was built from), `claims` (no findings), `target` (configured repository, base and engine branch), `open`, `head` (nobody pushed to the branch since the engine did), `files` (exactly the page files), `base files` (unchanged since review opened), `checks`, `mergeable` (GitHub reports `clean`), `auto-merge` and `publish mode`. Each required check name must identify one provider, whose latest run succeeded on the exact head. Missing provider information, ambiguous names and incomplete results block merging. The merge sends the head SHA the gates saw. When a person merges instead, the engine publishes only if the merged files are exactly the build it approved. The `recording` and `claims` gates run once more right before any publish, with or without review. For the Git target, a human merge itself deploys, regardless of the engine's dry-run setting; keep those PRs open until go-live.
 
+Each PR identifies its recording revision and approval date. Closing it holds that pending build. A newer approved revision can receive a replacement PR, including when its changes are metadata that leave the rendered page unchanged.
+
 **After a publish**, the live check fetches the page and requires: HTTP 200 with no redirect, no `noindex` or `none` robots directive (header or meta tag), the question in the title, exactly one canonical link pointing at the page, the expected meta description, JSON-LD with an `Article` by the speaker and a `VideoObject` for the video, the video embed, the speaker's name, and article text that still hashes to its `data-seo-engine-source` marker. A failed check or checker exception rolls back static and Shopify changes. A Git deployment that fails its check is reported for a manual revert; the engine cannot undo a merge.
+
+Shopify rollback restores visibility only when the saved previous build matches the recovery snapshot and passes freshly loaded recording and claims gates. Otherwise it keeps the restored content hidden, including after approval withdrawal or a rule change. Recovery writes cannot bypass the visibility gate.
 
 ## Connectors
 
@@ -156,7 +160,7 @@ In dry-run the engine still builds and checks the page and writes it to `state/d
 
 Tests use fake transports for Search Console, GitHub, Shopify, the webhook and the model; no test calls a real API.
 
-Reports require confirmed dates for both reporting weeks, even with a short ranking window. CSV coverage includes only dates represented by rows; an explicit zero-valued row can confirm an empty date. Missing dates and truncated Search Console pagination are unavailable data.
+Reports require confirmed dates for both reporting weeks, even with a short ranking window. CSV coverage includes only dates represented by valid rows. Clicks, impressions and position each require an explicit finite nonnegative number; blank, missing or invalid metrics make the data unavailable. A row containing numeric zeros can confirm an empty date. Missing dates and truncated Search Console pagination are unavailable data.
 
 What it does not do: generate images (pages use the video thumbnail), set up redirects or merge overlapping pages, check Google's index status (no URL Inspection API), publish Shopify blog articles (pages only), or send email. It never edits a page it did not build. Search Console leaves out anonymized and low-volume queries, so report totals cover the rows it returns.
 
@@ -167,9 +171,9 @@ What it does not do: generate images (pages use the video thumbnail), set up red
 - **Writes are allow-listed per connector** and refused before they are sent: GitHub can only create a tree, a commit, a branch under `branch_prefix`, a pull request into `base`, and a merge with an exact head SHA; Shopify can only create a page, update a page and update one metafield value. Neither can delete or force anything.
 - **A speaker is never reworded.** Fixes remove sentences or attach approved sources.
 - **Unknown is not zero.** A week without complete final data is reported as not available yet, never as a partial week.
-- **Existing content needs ownership evidence.** Static and Shopify pages must carry a valid engine source marker for the same recording; repository files must match the saved engine build before replacement.
+- **Existing content needs ownership evidence.** Static pages are tied to their recording, site folder, file paths and resolved destinations in saved state, so body corruption can be repaired independently of its source marker. Initial static collisions and existing Shopify pages require a valid source marker for the same recording; repository files must match the saved engine build before replacement. Changing the static destination or retargeting a symlink does not transfer ownership. Without a saved ownership record, a static page whose marker is already damaged requires reconciliation.
 - **Uncertain writes never repeat automatically.** Intent and recovery snapshots are saved before writes. Lost GitHub branch or PR responses are reconciled by reads; unresolved writes and webhook deliveries stay held. Forced report sends also honor the delivery journal. Corrupt state blocks writes and is preserved for recovery; see [SETUP.md](SETUP.md#recovering-interrupted-operations).
-- **Secrets come from environment variables.** Errors never include tokens, and webhook errors never include the URL.
+- **Secrets come from environment variables.** Errors never include tokens. Webhook URLs are validated before sending, and all webhook request errors omit the URL and raw exception message.
 
 ## Configuration
 

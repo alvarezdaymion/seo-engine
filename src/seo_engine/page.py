@@ -48,6 +48,7 @@ class Page:
     recording_id: str
     transcript_sha256: str
     revision_sha256: str = ""
+    description_from: list[str] = field(default_factory=list)
     draft_method: str = "template"
     removed: list[str] = field(default_factory=list)
 
@@ -82,15 +83,23 @@ def kept_transcript(answer: RecordedAnswer) -> tuple[list[list[str]], int]:
 
 def describe(answer: list[Sentence]) -> str:
     """Meta description: whole answer sentences up to 160 characters."""
+    return description_parts(answer)[0]
+
+
+def description_parts(answer: list[Sentence]) -> tuple[str, list[str]]:
+    """The description and the full sentences it uses, including a truncated first sentence."""
     out = ""
+    origins = []
     for s in answer:
         candidate = (out + " " + s.text).strip()
         if len(candidate) > DESCRIPTION_MAX:
             break
         out = candidate
+        origins.append(s.text)
     if not out and answer:
         out = answer[0].text[:DESCRIPTION_MAX - 3].rsplit(" ", 1)[0] + "..."
-    return out
+        origins = [answer[0].text]
+    return out, origins
 
 
 def build_page(answer: RecordedAnswer | None, *, answer_sentences: list[str], slug: str, canonical: str,
@@ -107,14 +116,15 @@ def build_page(answer: RecordedAnswer | None, *, answer_sentences: list[str], sl
     if not answer_sentences:
         raise ValueError("the answer section is empty")
     direct = [Sentence(tidy(s)) for s in answer_sentences]
+    description, description_from = description_parts(direct)
     return Page(
-        slug=slug, question=answer.question, description=describe(direct), canonical=canonical,
+        slug=slug, question=answer.question, description=description, canonical=canonical,
         site_name=site_name, speaker_name=answer.speaker_name, speaker_role=answer.speaker_role,
         recorded_on=answer.recorded_on, published_on=published_on, video_url=answer.video_url,
         thumbnail_url=answer.thumbnail_url or youtube_thumbnail(answer.video_url), answer=direct,
         transcript=[[Sentence(s) for s in para] for para in kept], sources=[], disclosures=list(disclosures),
         recording_id=answer.id, transcript_sha256=answer.transcript_sha256,
-        revision_sha256=answer.revision_sha256, draft_method=draft_method)
+        revision_sha256=answer.revision_sha256, description_from=description_from, draft_method=draft_method)
 
 
 # ---- video -------------------------------------------------------------------------------

@@ -1,10 +1,55 @@
 import json
 import os
+from argparse import Namespace
 
 import pytest
 
 from seo_engine import config
 from seo_engine.cli import main
+
+
+def test_report_send_aborts_when_collection_cannot_acquire_the_lock(tmp_path, monkeypatch):
+    from helpers import TODAY, ListSource, make_cfg
+
+    from seo_engine import cli
+    from seo_engine.engine import Deps, Engine
+
+    cfg = make_cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    lock = cfg.state_dir / "run.lock"
+    lock.write_text("active run")
+    calls = []
+
+    def transport(*args):
+        calls.append(1)
+        assert lock.exists()
+        return 200, b"ok"
+
+    engine = Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY)
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/report")
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "Engine", lambda _: engine)
+    assert cli.cmd_report(Namespace(config="unused", send=True)) == 1
+    assert not calls and not (cfg.state_dir / "report-deliveries.json").exists()
+    assert lock.read_text() == "active run"
+    lock.unlink()
+    monkeypatch.setattr(cli, "Engine", lambda _: Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY))
+    assert cli.cmd_report(Namespace(config="unused", send=True)) == 0
+    assert calls == [1]
+
+
+def test_report_does_not_send_after_state_initialization_fails(tmp_path, monkeypatch):
+    from helpers import make_cfg
+
+    from seo_engine import cli
+
+    cfg = make_cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    path = cfg.state_dir / "pages.json"
+    path.write_text("{")
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    assert cli.cmd_report(Namespace(config="unused", send=True)) == 1
+    assert path.read_text() == "{" and not (cfg.state_dir / "report-deliveries.json").exists()
 
 
 def test_demo_command_prints_the_refusals_the_build_and_the_report(tmp_path, capsys, monkeypatch):

@@ -117,3 +117,35 @@ def test_a_rule_needs_phrases_or_a_pattern(tmp_path):
     bad.write_text('[[banned]]\nid = "empty"\n')
     with pytest.raises(ValueError):
         load_rules(bad)
+
+
+@pytest.mark.parametrize("has_source", [False, True])
+def test_description_deduplication_preserves_the_body_fix(tmp_path, has_source):
+    claim = "A new cartridge reduces water use by 50 percent."
+    safe = ("We examine the cartridge and valve seat before choosing a replacement part, "
+            "then check every fitting before finishing the work.")
+    sources = [{"url": "https://www.example.org/measurements", "title": "Example measurements",
+                "supports": "50 percent"}] if has_source else []
+    answer = write_answer(tmp_path, transcript=claim + " " + safe, sources=sources)
+    page = page_for(answer, sentences=[claim, safe])
+    assert page.description == claim
+    findings = check(page, PACK)
+    assert any(f.where in ("answer", "transcript") and f.text == claim for f in findings)
+    fix(page, findings, answer, PACK)
+    assert check(page, PACK) == []
+    assert any(s.text == claim for s in page.all_sentences()) is has_source
+
+
+def test_truncated_description_keeps_its_cited_sentence_provenance(tmp_path):
+    claim = ("A new cartridge reduces water use by 50 percent in the measured sample, "
+             "which covers several fixture types, water pressures, installation methods, "
+             "and household layouts under the same test conditions.")
+    answer = write_answer(tmp_path, transcript=claim, sources=[
+        {"url": "https://www.example.org/measurements", "title": "Example measurements", "supports": "50 percent"}])
+    page = page_for(answer, sentences=[claim])
+    assert page.description.endswith("...") and "50 percent" in page.description
+    fix(page, check(page, PACK), answer, PACK)
+    assert check(page, PACK) == []
+    assert page.description_from == [claim]
+    page.description = page.description.replace("50 percent", "75 percent")
+    assert any(f.where == "description" for f in check(page, PACK))

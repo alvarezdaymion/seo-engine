@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .answers import RecordedAnswer
-from .page import Page, describe
+from .page import Page, Sentence, description_parts
 from .text import clean, phrase_in, sha256
 
 
@@ -82,22 +82,30 @@ def check(page: Page, pack: RulePack) -> list[Finding]:
     found: list[Finding] = []
     seen: set[tuple[str, str]] = set()
 
+    def description_is_cited(rule: Rule) -> bool:
+        origins = page.description_from
+        if not origins:
+            derived, origins = description_parts(page.answer)
+            if derived != page.description:
+                origins = [page.description] if any(s.text == page.description for s in page.all_sentences()) else []
+        if not origins or description_parts([Sentence(text) for text in origins]) != (page.description, origins):
+            return False
+        affected = [text for text in origins if rule.hit(text)]
+        return bool(affected) and all(any(s.text == text and s.sources for s in page.all_sentences())
+                                      for text in affected)
+
     def scan(text: str, where: str, kinds: tuple[str, ...], cited: bool = False) -> None:
         for rule in pack.rules:
             if rule.kind not in kinds or (rule.kind == "needs_source" and cited):
                 continue
             hit = rule.hit(text)
-            if hit and where == "description" and rule.kind == "needs_source" and any(
-                s.sources and rule.hit(s.text) == hit and (text in s.text or s.text in text)
-                for s in page.all_sentences()
-            ):
+            if hit and where == "description" and rule.kind == "needs_source" and description_is_cited(rule):
                 continue
             if hit and (rule.id, text) not in seen:
                 seen.add((rule.id, text))
                 found.append(Finding(rule.id, rule.kind, rule.reason, where, text, hit))
 
     scan(page.question, "title", ("banned", "needs_source"))
-    scan(page.description, "description", ("banned", "needs_source"))
     for name in ("speaker_name", "speaker_role", "site_name", "recorded_on", "published_on"):
         scan(getattr(page, name), name, ("banned", "needs_source"))
     for source in page.sources:
@@ -109,6 +117,7 @@ def check(page: Page, pack: RulePack) -> list[Finding]:
     for para in page.transcript:
         for s in para:
             scan(s.text, "transcript", ("banned", "needs_source"), cited=bool(s.sources))
+    scan(page.description, "description", ("banned", "needs_source"))
     for did, text in pack.disclosures:
         if text not in page.disclosures:
             found.append(Finding(did, "missing_disclosure", "required disclosure", "page", text))
@@ -156,6 +165,6 @@ def fix(page: Page, findings: list[Finding], answer: RecordedAnswer, pack: RuleP
                 why = 'banned phrase "%s"' % f.match if f.kind == "banned" else "no approved source"
                 actions.append('removed "%s" (%s; a speaker is never reworded)' % (_short(f.text), why))
     if rederive:
-        page.description = describe(page.answer)
+        page.description, page.description_from = description_parts(page.answer)
         actions.append("rebuilt the meta description from the remaining answer")
     return actions

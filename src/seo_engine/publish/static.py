@@ -26,6 +26,7 @@ class StaticPublisher:
         self.root = Path(root).resolve()
         self.file_pattern = file_pattern
         self.fmt = fmt
+        self.owned_files: dict[str, str] = {}
 
     def files(self, page: Page) -> dict[str, str]:
         content = render_markdown(page) if self.fmt == "markdown" else render_html(page)
@@ -41,7 +42,8 @@ class StaticPublisher:
         rel, content = next(iter(self.files(page).items()))
         dest = self._dest(rel)
         previous = dest.read_text() if dest.exists() else None
-        if previous is not None and not owned_by(previous, page.recording_id):
+        known = self.owned_files.get(rel) == str(dest)
+        if previous is not None and not known and not owned_by(previous, page.recording_id):
             raise PermissionError("refused to replace a file without verified engine ownership: %s" % rel)
         if previous == content:
             return Published("unchanged", str(dest))

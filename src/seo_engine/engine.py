@@ -32,7 +32,7 @@ from .http import Transport
 from .livecheck import CheckResult, Fetch, check_until, expected_for, fetch_any
 from .livecheck import check as live_check
 from .opportunities import rank
-from .page import Page, build_page, kept_transcript
+from .page import Page, build_page, kept_transcript, render_body
 from .planner import Action, held_key, plan
 from .search import CsvSource, between, complete_weeks, latest_date, periods
 from .state import RunLock, State, WriteJournal, read_json, write_json
@@ -131,17 +131,17 @@ class Engine:
 
     # ---- the run -------------------------------------------------------------------------
 
-    def run(self, execute: bool = True, report: str = "auto") -> dict[str, Any]:
+    def run(self, execute: bool = True, report: str = "auto", send_report: bool | None = None) -> dict[str, Any]:
         try:
             with RunLock(self.cfg.state_dir / "run.lock"):
                 self.state = State(self.cfg.state_dir)
-                return self._run(execute, report)
+                return self._run(execute, report, send_report)
         except RuntimeError as e:
             self.blocker(str(e))
             self.r["status"] = "error"
             return self.r
 
-    def _run(self, execute: bool, report: str) -> dict[str, Any]:
+    def _run(self, execute: bool, report: str, send_report: bool | None) -> dict[str, Any]:
         self.answers, errors = load_answers(self.cfg.path(self.cfg["answers"]["dir"]))
         for e in errors:
             self.blocker("recorded answer skipped: " + e)
@@ -171,7 +171,7 @@ class Engine:
                 self.r["status"] = "error"
         if report == "force" or (report == "auto" and self.report_due()):
             try:
-                self.write_report(mark=report == "auto")
+                self.write_report(mark=report == "auto", send=send_report)
             except Exception as e:
                 self.blocker("weekly report failed: %s" % str(e)[:300])
         self.state.save()
@@ -206,13 +206,22 @@ class Engine:
         failing, out = [], []
         fetch = self.deps.fetch or fetch_any
         for slug, rec in sorted(self.state.records.items()):
-            page = self.state.page(slug)
-            if not rec.get("live") or page is None:
+            if not rec.get("live"):
                 continue
             try:
-                res = live_check(expected_for(page, self.fetch_url(page)), fetch)
+                page = self.state.page(slug)
+                if page is None:
+                    raise RuntimeError("saved build is missing")
             except Exception as e:
-                res = CheckResult(False, self.fetch_url(page), problems=["live check failed (%s)" % type(e).__name__])
+                problem = "saved build is unavailable (%s)" % type(e).__name__
+                self.blocker("%s: %s" % (slug, problem))
+                res = CheckResult(False, rec.get("url", ""), problems=[problem])
+            else:
+                try:
+                    res = live_check(expected_for(page, self.fetch_url(page)), fetch)
+                except Exception as e:
+                    res = CheckResult(False, self.fetch_url(page),
+                                      problems=["live check failed (%s)" % type(e).__name__])
             rec["last_check"] = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
             out.append({"slug": slug, "url": res.url, "ok": res.ok, "problems": res.problems})
             if not res.ok:
@@ -271,6 +280,7 @@ class Engine:
             return
         self.r["action"]["description"] = {"before": page.description, "after": scored[0][1]}
         page.description = scored[0][1]
+        page.description_from = [scored[0][1]]
         self.ship(page, answer, new=False, title="Update description: %s" % page.question)
 
     def ship(self, page: Page, answer: RecordedAnswer, *, new: bool, title: str) -> None:
@@ -296,6 +306,7 @@ class Engine:
             return
         self.state.store_page(page, pending=True)
         rec["pending_kind"] = act["kind"]
+        rec["pending_key"] = held_key(answer, self.pack.sha256)
         review = self.review()
         if review is None:
             self.publish(page, rec, new=new)
@@ -350,6 +361,12 @@ class Engine:
             self.r["action"]["status"] = self.r["status"] = "held"
             self.blocker("finish %s: the pending build is missing" % a.slug)
             return
+        pending_key = rec.get("pending_key")
+        if pending_key is None:
+            answer = self.answer(page.recording_id)
+            pending_key = (held_key(answer, self.pack.sha256)
+                           if answer and answer.revision_sha256 == page.revision_sha256
+                           else "%s::%s" % (page.revision_sha256, self.pack.sha256))
         if rec["status"] == "merged":
             self.publish(page, rec, new=bool(rec.get("new")))
             return
@@ -369,8 +386,7 @@ class Engine:
             changed = [p for p, c in self.publisher().files(page).items() if review.base_file(p) != c]
             if changed:
                 reason = "the merged files differ from the approved build: %s" % ", ".join(changed)
-                answer = self.answer(rec.get("recording_id", ""))
-                rec.update(status="held", reason=reason, held_key=held_key(answer, self.pack.sha256) if answer else "")
+                rec.update(status="held", reason=reason, held_key=pending_key)
                 self.r["action"]["status"] = self.r["status"] = "held"
                 self.blocker("held %s: %s" % (a.slug, reason))
                 return
@@ -378,9 +394,8 @@ class Engine:
             self.state.log({"event": "merged", "slug": a.slug, "pr": rec["pr"]["number"], "by": "a person"})
             self.publish(page, rec, new=bool(rec.get("new")))
         elif pr.get("state") == "closed":
-            answer = self.answer(rec.get("recording_id", ""))
             rec.update(status="closed", reason="pull request closed without merging",
-                       held_key=held_key(answer, self.pack.sha256) if answer else "")
+                       held_key=pending_key)
             self.r["action"]["status"] = self.r["status"] = "closed"
             self.state.log({"event": "closed", "slug": a.slug, "pr": rec["pr"]["number"]})
         else:
@@ -429,8 +444,27 @@ class Engine:
             rec["publication"]["undo"] = undo
             self.state.save()
 
+        def require_restore(undo: dict[str, Any]) -> None:
+            previous = self.state.page(page.slug)
+            if (previous is None or undo.get("body_html") != render_body(previous)
+                    or undo.get("title") != previous.question
+                    or {k: value[1] for k, value in undo.get("seo", {}).items()}
+                    != {"title_tag": previous.question, "description_tag": previous.description}):
+                raise RuntimeError("previous approved build cannot be verified; kept hidden")
+            self.require_release(previous)
+
         publisher.save_recovery = save_recovery
         publisher.before_write = lambda: self.require_release(page)
+        publisher.before_restore = require_restore
+        if publisher.target == "static":
+            ownership = rec.get("ownership") or {}
+            previous = self.state.page(page.slug)
+            publisher.owned_files = {}
+            if (rec.get("live") and previous and previous.recording_id == page.recording_id
+                    and ownership.get("root") == str(publisher.root)
+                    and ownership.get("recording_id") == page.recording_id
+                    and isinstance(ownership.get("files"), dict)):
+                publisher.owned_files = dict(ownership["files"])
         try:
             pub = publisher.publish(page)
         except Exception as e:
@@ -452,6 +486,9 @@ class Engine:
             rec.update(status="published", live=True, reason="", last_check=last_check, updated_on=today,
                        published_on=rec.get("published_on") or today)
             rec["publication"]["status"] = "done"
+            if publisher.target == "static":
+                rec["ownership"] = {"root": str(publisher.root), "recording_id": page.recording_id,
+                                    "files": {rel: str(publisher._dest(rel)) for rel in files}}
             if rec.get("pending_kind") == "snippet":
                 rec["snippet_on"] = today
             rec.pop("pending_kind", None)
@@ -481,6 +518,8 @@ class Engine:
         claims = act["claims"]
         lines = ['Built by seo-engine from recorded answer `%s`: "%s", answered by %s.'
                  % (answer.id, answer.question, answer.speaker_name), "",
+                 "- Recording revision: %s" % page.revision_sha256,
+                 "- Approved on: %s" % answer.approval.get("on", ""),
                  "- Evidence: %s" % act.get("evidence", act.get("query", "")),
                  "- Page: %s" % page.canonical,
                  "- Draft: %s%s" % (act.get("draft", "unchanged"),
@@ -510,9 +549,10 @@ class Engine:
         meta.update(path=str(path), sent=False, text=text)
         self.r["report"] = meta
         if send if send is not None else self.cfg["report"]["send"] == "webhook":
+            url = report_mod.webhook_url()
             journal = WriteJournal(self.cfg.state_dir / "report-deliveries.json")
             journal.perform(meta["week"][0], lambda: report_mod.send_webhook(
-                text, self.cfg["report"]["payload_key"], transport=self.deps.webhook))
+                text, self.cfg["report"]["payload_key"], url=url, transport=self.deps.webhook))
             meta["sent"] = True
         if mark:
             write_json(self.cfg.state_dir / "report.json", {"week": meta["week"][0], "written": self.today.isoformat()})
