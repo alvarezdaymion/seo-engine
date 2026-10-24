@@ -1,0 +1,37 @@
+[project]
+name = "seo-engine"
+version = "0.1.0"
+description = "SEO engine: ranks Search Console opportunities, builds pages only from approved recorded answers, checks every claim and the live page, and ships through a gated pull request."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Daymion Alvarez" }]
+dependencies = []
+
+[project.optional-dependencies]
+llm = ["anthropic>=1.0"]
+
+[project.scripts]
+seo-engine = "seo_engine.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/seo_engine"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP031"]

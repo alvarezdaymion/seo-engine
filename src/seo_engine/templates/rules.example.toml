@@ -1,0 +1,38 @@
+# seo-engine rule pack. Every page is checked against it before it can be merged or published.
+# Copy to rules.toml (`seo-engine init` does it) and edit it for your business and your market.
+# Phrases match whole words and ignore case. `pattern` is a Python regular expression.
+
+name = "Example rule pack"
+
+# Phrases that may not appear anywhere on a page. A sentence with one is removed, never reworded.
+[[banned]]
+id = "guarantee"
+phrases = ["guaranteed", "guarantee", "risk-free", "lifetime warranty"]
+reason = "Promises an outcome."
+
+[[banned]]
+id = "superlative"
+phrases = ["best in town", "number one", "#1", "cheapest", "lowest price"]
+reason = "A superlative the page cannot prove."
+
+# Claims that may only appear in a sentence that cites one of the recording's approved sources
+# (the `sources` list in the answer file). Without a matching source, the sentence is removed.
+[[needs_source]]
+id = "percentage"
+pattern = '\b\d+(\.\d+)?\s*(%|percent)'
+reason = "A percentage needs a source."
+
+[[needs_source]]
+id = "research"
+phrases = ["studies show", "research shows", "experts agree", "proven to", "scientifically proven"]
+reason = "A research claim needs a source."
+
+[[needs_source]]
+id = "law-or-code"
+phrases = ["required by law", "code requires", "against code", "the law says"]
+reason = "A legal or building-code requirement needs a source."
+
+# Text every page must carry.
+[[disclosures]]
+id = "general-information"
+text = "This answer is general information from a recorded conversation, not advice for your specific situation."
