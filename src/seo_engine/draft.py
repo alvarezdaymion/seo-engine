@@ -4,12 +4,10 @@ Template (default): the first `answer_sentences` sentences of the approved trans
 five words or more, which skips openers like "Good question."
 
 Model ([draft] mode = "model", `uv sync --extra llm`): the model gets the question and the
-transcript as numbered sentences and returns the sentences that answer it most directly, each with
-the numbers it came from. It may drop filler and join sentences but not add words. Every output
-sentence is checked: each word outside a small set of grammatical glue words (a, the, and, it, is,
-of, to...) must appear in the sentences it cites, the cited numbers must exist, and a negation in
-the cited sentences cannot be dropped. One failed sentence rejects the whole draft and the
-template is used instead. The claim check runs on the result either way.
+transcript as numbered sentences and selects whole sentences in their original order. The only
+cleanup is deterministic removal of filler sounds and normalization of quotes, capitalization
+and whitespace. A changed sentence rejects the whole draft and the template is used instead.
+The claim check runs on the result either way.
 """
 
 from __future__ import annotations
@@ -18,14 +16,14 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .text import claim_words, has_negation, words
+from .text import claim_words, has_negation, tidy, words
 
 SYSTEM = (
     "You pick the direct answer for a web page built from a recorded answer. The user message has the "
     "question and the transcript as numbered sentences. Choose the two to four sentences that answer the "
-    "question most directly, in reading order. You may drop filler words and join two neighbouring "
-    "sentences, but use only words from the sentences you cite: no new facts, numbers, names, promises "
-    "or advice, and keep every negation. For each sentence, list the numbers of the sentences it uses."
+    "question most directly, in reading order. Copy whole sentences exactly; you may remove only "
+    "filler sounds such as um and uh. Do not shorten, join or rearrange sentences. "
+    "For each sentence, list its one source sentence number."
 )
 
 SCHEMA = {
@@ -64,6 +62,8 @@ def grounding_problems(text: str, cited: list[str]) -> list[str]:
         problems.append("adds words not in the cited sentences: " + ", ".join(extra[:8]))
     if has_negation(source) and not has_negation(text):
         problems.append("drops a negation")
+    if len(cited) != 1 or tidy(text) != tidy(cited[0]):
+        problems.append("must select a whole approved sentence with only filler cleanup")
     return problems
 
 
@@ -72,17 +72,21 @@ def check_model_output(data: Any, transcript: list[str], max_sentences: int) -> 
     if not isinstance(items, list) or not 1 <= len(items) <= max_sentences:
         raise DraftRejected("expected 1 to %d answer sentences" % max_sentences)
     out = []
+    last_ref = 0
     for item in items:
         text = str(item.get("text", "")).strip() if isinstance(item, dict) else ""
         refs = item.get("from") if isinstance(item, dict) else None
         if not text or not isinstance(refs, list) or not refs:
             raise DraftRejected("each sentence needs text and the numbers it came from")
-        if not all(isinstance(n, int) and 1 <= n <= len(transcript) for n in refs):
+        if not all(type(n) is int and 1 <= n <= len(transcript) for n in refs):
             raise DraftRejected("cites a sentence number that does not exist: %s" % refs)
         problems = grounding_problems(text, [transcript[n - 1] for n in refs])
         if problems:
             raise DraftRejected("%r %s" % (text[:60], "; ".join(problems)))
-        out.append(text)
+        if refs[0] <= last_ref:
+            raise DraftRejected("sentences must be selected in transcript order")
+        last_ref = refs[0]
+        out.append(tidy(text))
     return out
 
 
@@ -93,7 +97,7 @@ def model_draft(question: str, transcript: list[str], dcfg: dict[str, Any], clie
             import anthropic
         except ImportError as e:
             raise DraftRejected("install the llm extra to use the model draft: uv sync --extra llm") from e
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(max_retries=0)
     numbered = "\n".join("%d. %s" % (i, s) for i, s in enumerate(transcript, 1))
     kwargs: dict[str, Any] = {
         "model": dcfg["model"], "max_tokens": int(dcfg["max_tokens"]), "system": SYSTEM,
@@ -121,5 +125,6 @@ def make_draft(question: str, transcript: list[str], dcfg: dict[str, Any], n: in
         return model_draft(question, transcript, dcfg, client)
     except Exception as e:  # any model failure falls back to the template, and says why
         fallback = template_draft(transcript, n)
-        fallback.note = "model draft rejected: %s" % str(e)[:200]
+        reason = str(e)[:200] if isinstance(e, DraftRejected) else type(e).__name__
+        fallback.note = "model draft rejected: %s" % reason
         return fallback

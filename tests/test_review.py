@@ -43,7 +43,8 @@ def test_all_gates_pass_and_the_merge_uses_the_gated_head():
     review, fake, _ = make()
     pr = open_one(review)
     gates = review.gates(pr["number"], pr["head"], pr["files"], ["build"])
-    assert [(g.name, g.ok) for g in gates] == [("open", True), ("head", True), ("files", True), ("checks", True),
+    assert [(g.name, g.ok) for g in gates] == [("target", True), ("open", True), ("head", True),
+                                               ("files", True), ("checks", True),
                                                ("mergeable", True)]
     review.merge(pr["number"], pr["head"], "Add answer page: faucet (#1)")
     merge = [d for m, p, d in fake.calls if m == "PUT"][0]
@@ -99,3 +100,54 @@ def test_missing_token_fails_clearly(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
         GitHubReview("example/site")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ref", "other"), ("repo", {"full_name": "example/other"}), ("repo", None),
+])
+def test_merge_refuses_a_changed_or_missing_target(field, value):
+    review, fake, _ = make()
+    pr = open_one(review)
+    fake.pulls[1]["base"][field] = value
+    assert any(not g.ok for g in review.gates(1, pr["head"], pr["files"], []))
+    with pytest.raises(PermissionError):
+        review.merge(1, pr["head"], "title")
+    assert not any(m == "PUT" for m, _, _ in fake.calls)
+
+
+@pytest.mark.parametrize("case", ["providers", "latest", "head", "missing", "truncated"])
+def test_required_checks_fail_closed_on_ambiguous_or_stale_results(case):
+    review, fake, _ = make()
+    pr = open_one(review)
+    good = {"id": 100, "name": "build", "app": {"id": 10}, "head_sha": pr["head"],
+            "status": "completed", "conclusion": "success"}
+    runs = [good]
+    if case == "providers":
+        runs.append({**good, "id": 101, "app": {"id": 20}, "conclusion": "failure"})
+    elif case == "latest":
+        runs.append({**good, "id": 101, "conclusion": "failure"})
+    elif case == "head":
+        good["head_sha"] = "other-head"
+    elif case == "missing":
+        good.pop("app")
+    original = fake.route
+
+    def route(method, path, data, query):
+        if path.endswith("/check-runs"):
+            return 200, {"total_count": len(runs) + (1 if case == "truncated" else 0), "check_runs": runs}
+        return original(method, path, data, query)
+
+    fake.route = route
+    gates = {g.name: g for g in review.gates(1, pr["head"], pr["files"], ["build"])}
+    assert not gates["checks"].ok
+
+
+def test_merge_requires_the_recorded_head_branch():
+    review, fake, _ = make()
+    pr = open_one(review)
+    fake.pulls[1]["head"]["ref"] = "seo-engine/other"
+    gates = review.gates(1, pr["head"], pr["files"], [], branch=pr["branch"])
+    assert any(not g.ok for g in gates)
+    with pytest.raises(PermissionError):
+        review.merge(1, pr["head"], "title", branch=pr["branch"])
+    assert not any(m == "PUT" for m, _, _ in fake.calls)

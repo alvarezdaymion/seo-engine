@@ -9,8 +9,8 @@ Project page: [daymionalvarez.com/portfolio/seo-engine](https://daymionalvarez.c
 The first version of this system worked as software and failed as marketing. It had a daily article quota, so a model wrote an article a day, and almost nobody clicked them: no real person on the page, topics picked to fill the slot, answers shaped to pass a review instead of answering the question. The fix is a rule in code, not a prompt: **a page can only exist if it is built from an approved recorded answer.** It is enforced in three places:
 
 1. **The planner** refuses a search query that no approved recording covers. The query goes into the weekly report as a question to record.
-2. **The page builder** raises `NoApprovedRecording` without one, and refuses answer text that uses words the transcript does not contain.
-3. **The release gates** check the approval again right before every merge and publish, against the SHA-256 of the transcript, so an edited transcript or a withdrawn approval stops the release.
+2. **The page builder** raises `NoApprovedRecording` without one, and accepts only whole transcript sentences in their original order, with deterministic filler cleanup.
+3. **The release gates** reload approval and rules right before every merge and publish. Approval binds the transcript and publication metadata, including cuts, sources, question, speaker and video. Any change needs reapproval, and a pending build from an older revision stays blocked even after reapproval.
 
 There is no setting that makes the engine produce pages. `max_new_pages_per_day` is a ceiling, and an idle run is normal. `tests/test_recording_gate.py` pins all of this.
 
@@ -78,10 +78,10 @@ Weekly report: seo-engine-demo/reports/2026-03-02.md
    4. give a low-CTR page the engine built a new meta description, taken from the transcript sentence that best matches its top query (at most once per page every 28 days);
    5. nothing. An idle run is normal.
 4. **Build and check.** The page is built from the recording, the claim check runs, safe fixes are applied and the check runs again. A page with findings is held and listed in the report.
-5. **Review, merge and publish**, each behind its own switch (below). After a publish the page is fetched and checked again, with retries for a CDN or deploy, and rolled back if it still fails.
+5. **Review, merge and publish**, each behind its own switch (below). After a publish the page is fetched and checked again, with retries for a CDN or deploy. Static and Shopify changes are rolled back if it still fails. For Git deployments, the merge deploys immediately and recovery requires a manual revert.
 6. **Report.** On the report weekday (Thursday by default, when last week's final data is usually in), the weekly report is written to `reports/` and sent if delivery is on.
 
-A failing step is recorded as a blocker and never stops the steps after it. `seo-engine run` exits 1 when the run has a blocker, so a scheduler can alert on it.
+A failing step is recorded as a blocker and never stops the steps after it. `seo-engine run` exits 1 when the run has a blocker, so a scheduler can alert on it. Runs are serialized with `state/run.lock`; an interrupted run can leave a lock that must be reconciled before another run.
 
 ## Recorded answers
 
@@ -99,17 +99,18 @@ Each recording is two files in `answers/`: `<id>.json` and the transcript `<id>.
   "cut": ["Honestly, if you flush it every year, that tank is guaranteed to last twenty years."],
   "sources": [{"supports": "10 percent longer", "title": "Water heater maintenance basics (example source)",
                "url": "https://www.example.org/water-heater-maintenance"}],
-  "approval": {"status": "approved", "by": "owner", "on": "2026-03-02", "transcript_sha256": "82e5f0bf..."}
+  "approval": {"status": "approved", "by": "owner", "on": "2026-03-02", "transcript_sha256": "82e5f0bf...",
+               "revision_sha256": "computed by the approve command"}
 }
 ```
 
 - `cut` lists what the approved video edit removed. Those sentences never reach the page, even though the raw transcript still has them.
 - `sources` are links a person approved along with the recording. `supports` is the wording in the transcript each one backs.
-- `seo-engine approve <id> --by <name>` writes the approval and binds it to the transcript's SHA-256. Editing the transcript afterwards withdraws it.
+- `seo-engine approve <id> --by <name>` writes transcript and recording-revision hashes. Editing the transcript or approved metadata afterwards withdraws approval. Approvals created without a revision hash need reapproval with this command.
 - YouTube and Vimeo links become an iframe embed; any other https URL becomes a `<video>` element.
 - A query matches a recording when it is one of the `target_queries`, or when its topic words overlap the question's enough (`match_threshold`, a Dice score, 0.6 by default).
 
-The direct answer at the top of the page is the first three transcript sentences that have five words or more. With `[draft] mode = "model"`, a model picks the sentences instead. It may join sentences and drop filler, and every output sentence is checked against the sentences it cites: any word outside a small set of grammar words (a, the, and, it, is, of...) that is not in those sentences, or a dropped negation, rejects the whole draft and the template is used. The claim check runs either way.
+The direct answer at the top of the page is the first three transcript sentences that have five words or more. With `[draft] mode = "model"`, a model picks whole sentences instead, in transcript order. Only filler sounds such as "um" and "uh" may be removed; words, punctuation, numbers and qualifiers otherwise stay intact. Any shortened, joined or rearranged sentence rejects the whole draft and the template is used. Model attempts are recorded and reused for the same recording revision and draft settings, including when a failed request fell back to the template. The claim check runs either way.
 
 ## The claim check
 
@@ -121,7 +122,7 @@ A rule pack is a TOML file; `seo-engine init` copies [the example](src/seo_engin
 | `[[needs_source]]` phrases or regex | a percentage, "studies show", "required by law" | Cite a source approved with the recording whose `supports` words are in the sentence, or remove the sentence |
 | `[[disclosures]]` | "This answer is general information..." | Add it |
 
-Phrases match whole words and ignore case. A banned phrase in the question itself cannot be fixed, so that page is held.
+Phrases match whole words and ignore case. The check includes the description, byline, source titles and disclosures. A banned phrase in a field that cannot be safely removed, such as the question or speaker role, holds the page. Removing an answer sentence also rebuilds its description, including a truncated description.
 
 ## Switches and gates
 
@@ -135,9 +136,9 @@ Phrases match whole words and ignore case. A banned phrase in the question itsel
 
 In dry-run the engine still builds and checks the page and writes it to `state/drafts/<slug>.html`, so you can read exactly what it would publish.
 
-**Before a merge**, every one of these must pass: `recording` (approved, same transcript the page was built from), `claims` (no findings), `open`, `head` (nobody pushed to the branch since the engine did), `files` (the pull request changes exactly the page files), `checks` (every name in `required_checks` succeeded), `mergeable` (GitHub reports `clean`), `auto-merge` and `publish mode`. The merge sends the head SHA the gates saw. When a person merges instead, the engine publishes only if the merged files are exactly the build it approved. The `recording` and `claims` gates run once more right before any publish, with or without review.
+**Before a merge**, every one of these must pass: `recording` (approved, same recording revision the page was built from), `claims` (no findings), `target` (configured repository, base and engine branch), `open`, `head` (nobody pushed to the branch since the engine did), `files` (exactly the page files), `base files` (unchanged since review opened), `checks`, `mergeable` (GitHub reports `clean`), `auto-merge` and `publish mode`. Each required check name must identify one provider, whose latest run succeeded on the exact head. Missing provider information, ambiguous names and incomplete results block merging. The merge sends the head SHA the gates saw. When a person merges instead, the engine publishes only if the merged files are exactly the build it approved. The `recording` and `claims` gates run once more right before any publish, with or without review. For the Git target, a human merge itself deploys, regardless of the engine's dry-run setting; keep those PRs open until go-live.
 
-**After a publish**, the live check fetches the page and requires: HTTP 200 with no redirect, no `noindex` (header or meta tag), the question in the title, exactly one canonical link pointing at the page, the expected meta description, JSON-LD with an `Article` by the speaker and a `VideoObject` for the video, the video embed, the speaker's name, and article text that still hashes to its `data-seo-engine-source` marker. A failure rolls back what the publisher changed.
+**After a publish**, the live check fetches the page and requires: HTTP 200 with no redirect, no `noindex` or `none` robots directive (header or meta tag), the question in the title, exactly one canonical link pointing at the page, the expected meta description, JSON-LD with an `Article` by the speaker and a `VideoObject` for the video, the video embed, the speaker's name, and article text that still hashes to its `data-seo-engine-source` marker. A failed check or checker exception rolls back static and Shopify changes. A Git deployment that fails its check is reported for a manual revert; the engine cannot undo a merge.
 
 ## Connectors
 
@@ -147,13 +148,15 @@ In dry-run the engine still builds and checks the page and writes it to `state/d
 | CSV | Real | The same rows from a file: `date,query,page,clicks,impressions,position` ([example](examples/search-console.csv)) |
 | GitHub | Real | REST API: tree, commit, branch and pull request, then the gates and a merge (squash by default) with the gated head SHA |
 | Static files | Real | HTML pages, or Markdown with front matter, written into a folder. Rollback restores the previous file |
-| Shopify Pages | Real, Admin REST API | Creates or updates a page and its SEO title and description. New pages are created hidden, then shown. Never deletes; rollback hides or restores |
+| Shopify Pages | Real, Admin REST API | Creates or updates a page and its SEO title and description. Changes stay hidden until all fields succeed. Never deletes; rollback hides or restores. Preview rendering needs no Shopify credentials |
 | Git deploy | Real | `[publish] target = "git"`: the reviewed repo is the site, so the merge publishes and the engine waits for the live check |
 | Webhook | Real | Posts the weekly report as JSON to an https URL (Slack-style `text`, or `content`) |
 | Anthropic | Optional | Picks the answer sentences when `[draft] mode = "model"` (`uv sync --extra llm`) |
 | Demo | Synthetic | Search rows, recordings and an in-memory GitHub for `seo-engine demo` |
 
 Tests use fake transports for Search Console, GitHub, Shopify, the webhook and the model; no test calls a real API.
+
+Reports require confirmed dates for both reporting weeks, even with a short ranking window. CSV coverage includes only dates represented by rows; an explicit zero-valued row can confirm an empty date. Missing dates and truncated Search Console pagination are unavailable data.
 
 What it does not do: generate images (pages use the video thumbnail), set up redirects or merge overlapping pages, check Google's index status (no URL Inspection API), publish Shopify blog articles (pages only), or send email. It never edits a page it did not build. Search Console leaves out anonymized and low-volume queries, so report totals cover the rows it returns.
 
@@ -164,6 +167,8 @@ What it does not do: generate images (pages use the video thumbnail), set up red
 - **Writes are allow-listed per connector** and refused before they are sent: GitHub can only create a tree, a commit, a branch under `branch_prefix`, a pull request into `base`, and a merge with an exact head SHA; Shopify can only create a page, update a page and update one metafield value. Neither can delete or force anything.
 - **A speaker is never reworded.** Fixes remove sentences or attach approved sources.
 - **Unknown is not zero.** A week without complete final data is reported as not available yet, never as a partial week.
+- **Existing content needs ownership evidence.** Static and Shopify pages must carry a valid engine source marker for the same recording; repository files must match the saved engine build before replacement.
+- **Uncertain writes never repeat automatically.** Intent and recovery snapshots are saved before writes. Lost GitHub branch or PR responses are reconciled by reads; unresolved writes and webhook deliveries stay held. Forced report sends also honor the delivery journal. Corrupt state blocks writes and is preserved for recovery; see [SETUP.md](SETUP.md#recovering-interrupted-operations).
 - **Secrets come from environment variables.** Errors never include tokens, and webhook errors never include the URL.
 
 ## Configuration

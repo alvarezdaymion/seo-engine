@@ -3,7 +3,7 @@
 A page is the recorded question as the H1, the speaker's name and role, a short direct answer
 taken from the transcript, the video, the full transcript minus the lines cut from the approved
 edit, cited sources and the required disclosures. `build_page` refuses to run without an
-approved recording, and refuses an answer section that uses words the transcript does not have.
+approved recording, and refuses answer sentences that differ from the transcript after tidying.
 There is no code path that writes a page from a keyword alone.
 """
 
@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 from .answers import RecordedAnswer, require_approved
-from .text import claim_words, paragraphs, phrase_in, sentences, sha256, tidy
+from .text import paragraphs, phrase_in, sentences, sha256, tidy
 
 DESCRIPTION_MAX = 160
 
@@ -47,6 +47,7 @@ class Page:
     disclosures: list[str]
     recording_id: str
     transcript_sha256: str
+    revision_sha256: str = ""
     draft_method: str = "template"
     removed: list[str] = field(default_factory=list)
 
@@ -96,22 +97,24 @@ def build_page(answer: RecordedAnswer | None, *, answer_sentences: list[str], sl
                site_name: str, published_on: str, disclosures: list[str], draft_method: str = "template") -> Page:
     answer = require_approved(answer)
     kept, _ = kept_transcript(answer)
-    allowed = claim_words(" ".join(s for para in kept for s in para))
+    allowed = [s for para in kept for s in para]
+    last = -1
     for s in answer_sentences:
-        extra = sorted(claim_words(s) - allowed)
-        if extra:
-            raise ValueError("answer sentence uses words that are not in the approved transcript: %s"
-                             % ", ".join(extra[:8]))
+        try:
+            last = allowed.index(tidy(s), last + 1)
+        except ValueError:
+            raise ValueError("answer sentence is not in the approved transcript in its original order") from None
     if not answer_sentences:
         raise ValueError("the answer section is empty")
-    direct = [Sentence(s) for s in answer_sentences]
+    direct = [Sentence(tidy(s)) for s in answer_sentences]
     return Page(
         slug=slug, question=answer.question, description=describe(direct), canonical=canonical,
         site_name=site_name, speaker_name=answer.speaker_name, speaker_role=answer.speaker_role,
         recorded_on=answer.recorded_on, published_on=published_on, video_url=answer.video_url,
         thumbnail_url=answer.thumbnail_url or youtube_thumbnail(answer.video_url), answer=direct,
         transcript=[[Sentence(s) for s in para] for para in kept], sources=[], disclosures=list(disclosures),
-        recording_id=answer.id, transcript_sha256=answer.transcript_sha256, draft_method=draft_method)
+        recording_id=answer.id, transcript_sha256=answer.transcript_sha256,
+        revision_sha256=answer.revision_sha256, draft_method=draft_method)
 
 
 # ---- video -------------------------------------------------------------------------------
@@ -257,6 +260,7 @@ class _ArticleText(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.marker: str | None = None
+        self.recording: str | None = None
         self.depth = 0
         self.skip = 0
         self.done = False
@@ -268,6 +272,7 @@ class _ArticleText(HTMLParser):
         a = dict(attrs)
         if self.depth == 0 and tag == "article" and "data-seo-engine-source" in a:
             self.marker, self.depth = a["data-seo-engine-source"] or "", 1
+            self.recording = a.get("data-seo-engine-recording")
         elif self.depth and tag == "article":
             self.depth += 1
         elif self.depth and tag in ("script", "style"):
@@ -298,3 +303,10 @@ def article_digest(document: str) -> tuple[str | None, str | None]:
     """(the marker value, SHA-256 of the article's visible text). (None, None) without an article."""
     marker, text = article_text(document)
     return (None, None) if marker is None else (marker, sha256(text))
+
+
+def owned_by(document: str, recording_id: str) -> bool:
+    parser = _ArticleText()
+    parser.feed(document)
+    marker, digest = article_digest(document)
+    return bool(marker and marker == digest and parser.done and parser.recording == recording_id)

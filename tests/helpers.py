@@ -31,6 +31,9 @@ def write_answer(directory: Path, answer_id: str = "ra-100", question: str = "Wh
     approval = {"status": "approved", "by": "owner", "on": "2026-01-06", "transcript_sha256": sha256(transcript)}
     data["approval"] = approval if approved else {"status": "recorded"}
     (directory / ("%s.json" % answer_id)).write_text(json.dumps(data))
+    if approved:
+        data["approval"]["revision_sha256"] = load_answer(directory / ("%s.json" % answer_id)).revision_sha256
+        (directory / ("%s.json" % answer_id)).write_text(json.dumps(data))
     return load_answer(directory / ("%s.json" % answer_id))
 
 

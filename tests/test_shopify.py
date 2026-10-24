@@ -107,7 +107,9 @@ def test_an_update_and_its_rollback(tmp_path):
     result = shop.publish(updated)
     assert result.action == "updated"
     assert [(m, p) for m, p, _ in writes(fake)] == [("PUT", BASE + "/pages/100.json"),
-                                                    ("PUT", BASE + "/metafields/901.json")]
+                                                    ("PUT", BASE + "/metafields/901.json"),
+                                                    ("PUT", BASE + "/pages/100.json")]
+    assert writes(fake)[0][2]["page"]["published"] is False
     assert fake.metafields[100][1]["value"] == "Most faucets can be fixed in under an hour."
     assert shop.rollback(result).startswith("restored")
     assert fake.metafields[100][1]["value"] == make_page(tmp_path / "c").description
@@ -161,3 +163,71 @@ def test_review_files_hold_the_exact_body_and_seo_fields(tmp_path):
     assert files["pages/faucet.html"] == render_body(page)
     meta = json.loads(files["pages/faucet.json"])
     assert meta["seo_description"] == page.description and meta["recording"] == "ra-100"
+
+
+@pytest.mark.parametrize("reply", [None, {}, {"pages": None}, {"pages": [{}]}])
+def test_unavailable_lookup_never_creates_a_page(tmp_path, reply):
+    calls = []
+
+    def transport(method, *args):
+        calls.append(method)
+        return 200, json.dumps(reply).encode()
+
+    with pytest.raises(RuntimeError):
+        make(transport).publish(make_page(tmp_path))
+    assert calls == ["GET"]
+
+
+def test_unverified_creation_response_cannot_mutate_another_page(tmp_path):
+    fake = FakeShopify([{"id": 123, "handle": "manual", "title": "Manual", "body_html": "Original",
+                         "published_at": None}])
+
+    def wrong_id(method, url, headers, body, timeout):
+        response = fake(method, url, headers, body, timeout)
+        if method == "POST":
+            return 201, json.dumps({"page": {"id": 123}}).encode()
+        return response
+
+    with pytest.raises(RuntimeError):
+        make(wrong_id).publish(make_page(tmp_path))
+    assert fake.pages[123]["published_at"] is None
+    assert not any(method == "PUT" and path.endswith("/123.json") for method, path, _ in fake.calls)
+
+
+def test_unconfirmed_seo_write_cannot_make_an_update_public(tmp_path):
+    fake = FakeShopify()
+    shop = make(fake)
+    shop.publish(make_page(tmp_path / "old"))
+    previous = fake.pages[100]["body_html"]
+
+    def unconfirmed(method, url, headers, body, timeout):
+        if method == "PUT" and "/metafields/" in url:
+            return 200, b"{}"
+        return fake(method, url, headers, body, timeout)
+
+    shop.http.transport = unconfirmed
+    with pytest.raises(RuntimeError):
+        shop.publish(make_page(tmp_path / "new", description_override="Changed description."))
+    assert not fake.pages[100]["published_at"] or fake.pages[100]["body_html"] == previous
+
+
+def test_unconfirmed_recovery_keeps_the_page_hidden(tmp_path):
+    fake = FakeShopify()
+    shop = make(fake)
+    shop.publish(make_page(tmp_path / "old"))
+    failed = False
+
+    def lose_then_ignore(method, url, headers, body, timeout):
+        nonlocal failed
+        if method == "PUT" and "/metafields/" in url:
+            if failed:
+                return 200, b"{}"
+            failed = True
+            fake(method, url, headers, body, timeout)
+            return 500, b"{}"
+        return fake(method, url, headers, body, timeout)
+
+    shop.http.transport = lose_then_ignore
+    with pytest.raises(RuntimeError):
+        shop.publish(make_page(tmp_path / "new", description_override="Changed description."))
+    assert not fake.pages[100]["published_at"]

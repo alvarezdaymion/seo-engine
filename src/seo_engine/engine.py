@@ -16,26 +16,27 @@ A failing step is recorded as a blocker and never stops the steps after it.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from . import report as report_mod
 from .answers import RecordedAnswer, load_answers
 from .claims import check, fix, load_rules
 from .config import WEEKDAYS
-from .draft import make_draft
+from .draft import Draft, make_draft
 from .gates import Gate, content_gates, failed
 from .http import Transport
-from .livecheck import Fetch, check_until, expected_for, fetch_any
+from .livecheck import CheckResult, Fetch, check_until, expected_for, fetch_any
 from .livecheck import check as live_check
 from .opportunities import rank
 from .page import Page, build_page, kept_transcript
 from .planner import Action, held_key, plan
 from .search import CsvSource, between, complete_weeks, latest_date, periods
-from .state import State, read_json, write_json
-from .text import content_words, dice
+from .state import RunLock, State, WriteJournal, read_json, write_json
+from .text import content_words, dice, sha256
 
 DESCRIPTION_MAX = 160
 
@@ -62,6 +63,7 @@ class Engine:
         self.answers: list[RecordedAnswer] = []
         self.pack: Any = None
         self.rows: list[Any] = []
+        self.coverage: set[str] = set()
         self.latest: dt.date | None = None
         self.search_error = ""
         self.opps: list[Any] = []
@@ -83,6 +85,8 @@ class Engine:
         if self.deps.review is None:
             from .review import GitHubReview
             self.deps.review = GitHubReview(rc["repo"], rc["base"], rc["path"], rc["branch_prefix"], rc["merge_method"])
+        if not getattr(self.deps.review, "journal", None) or self.deps.review.journal.path is None:
+            self.deps.review.journal = WriteJournal(self.cfg.state_dir / "github-writes.json")
         return self.deps.review
 
     def search_source(self) -> Any:
@@ -109,9 +113,35 @@ class Engine:
     def answer(self, recording_id: str) -> RecordedAnswer | None:
         return next((a for a in self.answers if a.id == recording_id), None)
 
+    def release_gates(self, page: Page) -> list[Gate]:
+        self.answers, errors = load_answers(self.cfg.path(self.cfg["answers"]["dir"]))
+        try:
+            self.pack = load_rules(self.cfg.path(self.cfg["claims"]["rules"]))
+        except Exception:
+            return [Gate("claims", False, "current rule pack could not be loaded")]
+        gates = content_gates(page, self.answers, check(page, self.pack))
+        if errors:
+            gates.append(Gate("recordings", False, "current recorded answers could not all be loaded"))
+        return gates
+
+    def require_release(self, page: Page) -> None:
+        problems = failed(self.release_gates(page))
+        if problems:
+            raise RuntimeError("release gate failed: " + "; ".join(g.detail for g in problems))
+
     # ---- the run -------------------------------------------------------------------------
 
     def run(self, execute: bool = True, report: str = "auto") -> dict[str, Any]:
+        try:
+            with RunLock(self.cfg.state_dir / "run.lock"):
+                self.state = State(self.cfg.state_dir)
+                return self._run(execute, report)
+        except RuntimeError as e:
+            self.blocker(str(e))
+            self.r["status"] = "error"
+            return self.r
+
+    def _run(self, execute: bool, report: str) -> dict[str, Any]:
         self.answers, errors = load_answers(self.cfg.path(self.cfg["answers"]["dir"]))
         for e in errors:
             self.blocker("recorded answer skipped: " + e)
@@ -150,12 +180,18 @@ class Engine:
 
     def read_search(self) -> None:
         days = int(self.cfg["search"]["days"])
+        self.rows, self.latest, self.coverage, self.search_error = [], None, set(), ""
         try:
-            self.rows = self.search_source().fetch(self.today - dt.timedelta(days=2 * days + 7), self.today)
+            start = min(self.today - dt.timedelta(days=2 * days + 7), complete_weeks(self.today)[1][0])
+            self.rows = self.search_source().fetch(start, self.today)
+            self.coverage = set(getattr(self.rows, "covered_dates", (r.date for r in self.rows)))
+            for date in self.coverage | {r.date for r in self.rows}:
+                dt.date.fromisoformat(date)
+            self.latest = latest_date(self.rows)
         except Exception as e:
+            self.rows, self.latest, self.coverage = [], None, set()
             self.search_error = "%s: %s" % (type(e).__name__, str(e)[:240])
             self.blocker("search data unavailable: " + self.search_error)
-        self.latest = latest_date(self.rows)
         self.r["search"] = {"rows": len(self.rows), "latest": self.latest.isoformat() if self.latest else None,
                             "error": self.search_error, "days": days}
 
@@ -173,7 +209,10 @@ class Engine:
             page = self.state.page(slug)
             if not rec.get("live") or page is None:
                 continue
-            res = live_check(expected_for(page, self.fetch_url(page)), fetch)
+            try:
+                res = live_check(expected_for(page, self.fetch_url(page)), fetch)
+            except Exception as e:
+                res = CheckResult(False, self.fetch_url(page), problems=["live check failed (%s)" % type(e).__name__])
             rec["last_check"] = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
             out.append({"slug": slug, "url": res.url, "ok": res.ok, "problems": res.problems})
             if not res.ok:
@@ -188,8 +227,17 @@ class Engine:
         assert answer is not None
         kept, cut = kept_transcript(answer)
         flat = [s for para in kept for s in para]
-        draft = make_draft(answer.question, flat, self.cfg["draft"], int(self.cfg["answers"]["answer_sentences"]),
-                           self.deps.llm)
+        def draft_once() -> Draft:
+            return make_draft(answer.question, flat, self.cfg["draft"],
+                              int(self.cfg["answers"]["answer_sentences"]), self.deps.llm)
+
+        if self.cfg["draft"]["mode"] == "model":
+            key = sha256(json.dumps([answer.revision_sha256, self.cfg["draft"],
+                                     self.cfg["answers"]["answer_sentences"]], sort_keys=True))
+            draft = Draft(**WriteJournal(self.cfg.state_dir / "model-drafts.json").perform(
+                key, lambda: asdict(draft_once())))
+        else:
+            draft = draft_once()
         rec = self.state.records.get(a.slug, {})
         page = build_page(answer, answer_sentences=draft.sentences, slug=a.slug, canonical=self.cfg.page_url(a.slug),
                           site_name=self.cfg["site"]["name"],
@@ -210,7 +258,6 @@ class Engine:
         answer = self.answer(rec.get("recording_id", ""))
         query = a.opportunity.query if a.opportunity else ""
         self.r["action"] = {"kind": "snippet", "slug": a.slug, "url": rec.get("url"), "query": query}
-        rec["snippet_on"] = self.today.isoformat()
         if page is None or answer is None:
             self.r["action"]["status"] = self.r["status"] = "held"
             self.blocker("snippet %s: the published build or its recording is missing" % a.slug)
@@ -238,7 +285,7 @@ class Engine:
         act["draft_file"] = str(self.state.store_draft(page))
         rec = self.state.record(page.slug)
         rec.update(url=page.canonical, recording_id=answer.id, transcript_sha256=answer.transcript_sha256)
-        gates = content_gates(page, self.answers, findings)
+        gates = self.release_gates(page)
         act["gates"] = [g.to_json() for g in gates]
         if failed(gates):
             reason = "; ".join("%s: %s" % (g.name, g.detail) for g in failed(gates))
@@ -248,14 +295,25 @@ class Engine:
             self.state.log({"event": "held", "slug": page.slug, "reason": reason})
             return
         self.state.store_page(page, pending=True)
+        rec["pending_kind"] = act["kind"]
         review = self.review()
         if review is None:
             self.publish(page, rec, new=new)
             return
-        files = self.publisher().files(page)
-        pr = review.open_pull_request(page.slug, files, title, self.pr_body(page, answer, act))
+        previous = self.state.page(page.slug)
+        rec.update(status="opening_review", new=new, opening={
+            "files": self.publisher().files(page), "title": title, "body": self.pr_body(page, answer, act),
+            "previous": self.publisher().files(previous) if previous else {}})
+        self.state.save()
+        self.open_review(page, rec)
+
+    def open_review(self, page: Page, rec: dict[str, Any]) -> None:
+        act, review, opening = self.r["action"], self.review(), rec["opening"]
+        title = opening["title"]
+        pr = review.open_pull_request(page.slug, opening["files"], title, opening["body"], opening["previous"])
         pr["title"] = title
-        rec.update(status="in_review", pr=pr, new=new, reason="")
+        rec.update(status="in_review", pr=pr, reason="")
+        self.state.save()
         act["review"] = {"status": "opened", **pr}
         self.state.log({"event": "opened", "slug": page.slug, "pr": pr["number"], "branch": pr["branch"]})
         self.try_merge(page, rec)
@@ -263,8 +321,9 @@ class Engine:
     def try_merge(self, page: Page, rec: dict[str, Any]) -> None:
         act, review, rc = self.r["action"], self.review(), self.cfg["review"]
         pr = rec["pr"]
-        gates = content_gates(page, self.answers, check(page, self.pack))
-        gates += review.gates(pr["number"], pr["head"], pr["files"], list(rc["required_checks"]))
+        gates = review.gates(pr["number"], pr["head"], pr["files"], list(rc["required_checks"]),
+                             base_files=pr.get("base_files"), branch=pr["branch"])
+        gates += self.release_gates(page)
         gates.append(Gate("auto-merge", bool(rc["auto_merge"]), "off: a person merges the pull request"))
         gates.append(Gate("publish mode", self.cfg["publish"]["mode"] == "live", "dry-run: nothing is merged"))
         act["merge_gates"] = [g.to_json() for g in gates]
@@ -274,7 +333,9 @@ class Engine:
             act["review"]["status"] = "waiting"
             act["status"] = self.r["status"] = "in_review"
             return
-        sha = review.merge(pr["number"], pr["head"], "%s (#%d)" % (pr.get("title", page.question), pr["number"]))
+        review.before_merge = lambda: self.require_release(page)
+        sha = review.merge(pr["number"], pr["head"], "%s (#%d)" % (pr.get("title", page.question), pr["number"]),
+                           branch=pr["branch"])
         rec.update(status="merged", merge_sha=sha, reason="")
         act["review"]["status"] = "merged"
         self.state.log({"event": "merged", "slug": page.slug, "pr": pr["number"], "sha": sha})
@@ -292,11 +353,18 @@ class Engine:
         if rec["status"] == "merged":
             self.publish(page, rec, new=bool(rec.get("new")))
             return
+        if rec["status"] == "opening_review":
+            self.open_review(page, rec)
+            return
         review = self.review()
         if review is None:
             self.blocker("finish %s: review is off but a pull request is open" % a.slug)
             return
         pr = review.pull(rec["pr"]["number"])
+        if not review.target_ok(pr, rec["pr"]["branch"]):
+            self.blocker("finish %s: pull request repository or target branch changed or is missing" % a.slug)
+            self.r["status"] = "held"
+            return
         if pr.get("merged"):
             changed = [p for p, c in self.publisher().files(page).items() if review.base_file(p) != c]
             if changed:
@@ -335,7 +403,7 @@ class Engine:
 
     def publish(self, page: Page, rec: dict[str, Any], *, new: bool, rollback: bool = True) -> None:
         act, lc = self.r["action"], self.cfg["livecheck"]
-        gates = content_gates(page, self.answers, check(page, self.pack))  # again, right before anything goes out
+        gates = self.release_gates(page)
         act["publish_gates"] = [g.to_json() for g in gates]
         if failed(gates):
             reason = "; ".join("%s: %s" % (g.name, g.detail) for g in failed(gates))
@@ -351,16 +419,42 @@ class Engine:
                 rec.update(status="dry-run")
             act["status"] = self.r["status"] = "dry-run"
             return
-        pub = publisher.publish(page)
+        publication = rec.get("publication")
+        if publication is not None and (not isinstance(publication, dict) or publication.get("status") != "done"):
+            raise RuntimeError("previous publication outcome is uncertain; reconcile state before publishing")
+        rec["publication"] = {"status": "pending", "undo": {}}
+        self.state.save()
+
+        def save_recovery(undo: dict[str, Any]) -> None:
+            rec["publication"]["undo"] = undo
+            self.state.save()
+
+        publisher.save_recovery = save_recovery
+        publisher.before_write = lambda: self.require_release(page)
+        try:
+            pub = publisher.publish(page)
+        except Exception as e:
+            if getattr(e, "recovery", None):
+                act["rollback"] = e.recovery
+            self.state.save()
+            raise
+        save_recovery(pub.undo)
         act["publish"] = {"status": pub.action, "where": pub.where, "files": files}
-        res = check_until(expected_for(page, self.fetch_url(page)), self.deps.fetch or fetch_any,
-                          int(lc["attempts"]), float(lc["wait_seconds"]), self.deps.sleep)
+        try:
+            res = check_until(expected_for(page, self.fetch_url(page)), self.deps.fetch or fetch_any,
+                              int(lc["attempts"]), float(lc["wait_seconds"]), self.deps.sleep)
+        except Exception as e:
+            res = CheckResult(False, self.fetch_url(page), problems=["live check failed (%s)" % type(e).__name__])
         act["live"] = res.to_json()
         last_check = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
         if res.ok:
             first, today = not rec.get("live"), self.today.isoformat()
             rec.update(status="published", live=True, reason="", last_check=last_check, updated_on=today,
                        published_on=rec.get("published_on") or today)
+            rec["publication"]["status"] = "done"
+            if rec.get("pending_kind") == "snippet":
+                rec["snippet_on"] = today
+            rec.pop("pending_kind", None)
             self.state.store_page(page)
             self.state.log({"event": "published", "slug": page.slug, "url": page.canonical, "new": new and first,
                             "day": self.today.isoformat(), "action": pub.action})
@@ -368,11 +462,13 @@ class Engine:
             return
         problems = "; ".join(res.problems)
         if publisher.target == "git":
+            rec["publication"]["status"] = "done"
             rec.update(status="merged", reason="merged but not live yet: %s" % problems, last_check=last_check)
             act["status"] = self.r["status"] = "not live"
             self.blocker("%s is merged but not live yet: %s" % (page.canonical, problems))
             return
         undo = publisher.rollback(pub) if rollback else "left as published (the page was already failing)"
+        rec["publication"]["status"] = "done"
         act["rollback"] = undo
         rec.update(status="rolled_back" if rollback else rec.get("status", "published"),
                    reason="live check failed: %s" % problems, last_check=last_check)
@@ -406,13 +502,17 @@ class Engine:
 
     def write_report(self, mark: bool = True, send: bool | None = None) -> dict[str, Any]:
         text, meta = report_mod.build(self.cfg, self.rows, self.latest, self.today, self.state.records,
-                                      self.state.events(), self.plan, self.opps, self.answers, self.search_error)
+                                      self.state.events(), self.plan, self.opps, self.answers, self.search_error,
+                                      coverage=self.coverage)
         path = self.cfg.reports_dir / ("%s.md" % meta["week"][0])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         meta.update(path=str(path), sent=False, text=text)
+        self.r["report"] = meta
         if send if send is not None else self.cfg["report"]["send"] == "webhook":
-            report_mod.send_webhook(text, self.cfg["report"]["payload_key"], transport=self.deps.webhook)
+            journal = WriteJournal(self.cfg.state_dir / "report-deliveries.json")
+            journal.perform(meta["week"][0], lambda: report_mod.send_webhook(
+                text, self.cfg["report"]["payload_key"], transport=self.deps.webhook))
             meta["sent"] = True
         if mark:
             write_json(self.cfg.state_dir / "report.json", {"week": meta["week"][0], "written": self.today.isoformat()})

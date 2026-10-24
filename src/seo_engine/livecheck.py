@@ -11,6 +11,7 @@ body is the approved build.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -137,11 +138,21 @@ def _schema_nodes(blocks: list[str]) -> list[dict[str, Any]] | None:
             return None
         for item in data if isinstance(data, list) else [data]:
             if isinstance(item, dict):
-                nodes.extend(n for n in item.get("@graph", [item]) if isinstance(n, dict))
+                graph = item.get("@graph", [item])
+                if not isinstance(graph, list):
+                    return None
+                nodes.extend(n for n in graph if isinstance(n, dict))
     return nodes
 
 
 def check(expected: Expected, fetch: Fetch) -> CheckResult:
+    try:
+        return _check(expected, fetch)
+    except Exception as e:
+        return CheckResult(False, expected.url, problems=["live check failed (%s)" % type(e).__name__])
+
+
+def _check(expected: Expected, fetch: Fetch) -> CheckResult:
     res = CheckResult(False, expected.url)
 
     def gate(name: str, ok: bool, problem: str) -> None:
@@ -159,7 +170,9 @@ def check(expected: Expected, fetch: Fetch) -> CheckResult:
     gate("no redirect", r.url.rstrip("/") == expected.url.rstrip("/"), "redirected to %s" % r.url)
     p = _Head()
     p.feed(r.body)
-    noindex = "noindex" in r.headers.get("x-robots-tag", "").lower() or any("noindex" in v for v in p.robots)
+    headers = {k.lower(): v for k, v in r.headers.items()}
+    directives = p.robots + [headers.get("x-robots-tag", "")]
+    noindex = any(set(re.split(r"[\s,:]+", v.lower())) & {"noindex", "none"} for v in directives)
     gate("indexable", not noindex, "noindex is set")
     gate("title", clean(expected.title) in clean(p.title), "title is %r" % clean(p.title)[:80])
     gate("canonical", p.canonicals == [expected.canonical],
@@ -170,7 +183,9 @@ def check(expected: Expected, fetch: Fetch) -> CheckResult:
     article = next((n for n in nodes or [] if n.get("@type") == "Article"), None)
     video = next((n for n in nodes or [] if n.get("@type") == "VideoObject"), None)
     author = (article or {}).get("author") or {}
-    gate("schema", bool(article) and bool(video) and author.get("name") == expected.speaker
+    authors = author if isinstance(author, list) else [author]
+    gate("schema", bool(article) and bool(video)
+         and any(isinstance(a, dict) and a.get("name") == expected.speaker for a in authors)
          and expected.video_src in (video.get("embedUrl"), video.get("contentUrl")),
          "JSON-LD is invalid" if nodes is None else "JSON-LD lacks an Article by the speaker and the VideoObject")
     gate("video embed", expected.video_src in p.embeds, "video embed is missing")

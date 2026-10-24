@@ -25,6 +25,7 @@
     "status": "approved",
     "by": "owner",
     "on": "2026-03-02",
-    "transcript_sha256": "82e5f0bf2342ca89948d49e3421b1e4a6bc40f0dd6a742afacd889b16d9bba32"
+    "transcript_sha256": "82e5f0bf2342ca89948d49e3421b1e4a6bc40f0dd6a742afacd889b16d9bba32",
+    "revision_sha256": "b4de46d3efc4a4b52d6b67ee8a40504233e84b1aed3a326475191c52663d17e6"
   }
 }

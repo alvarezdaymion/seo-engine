@@ -8,6 +8,8 @@
   state/ledger.jsonl        one line per action: built, held, opened, merged, published, rolled back
   state/report.json         the last week a report was written for
   state/last-run.json       the summary of the latest run
+  state/*-writes.json, report-deliveries.json, model-drafts.json  durable operation journals
+  state/*.lock              exclusive run and journal locks; interrupted locks require recovery
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +33,82 @@ def write_json(path: Path, data: Any) -> None:
 
 def read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
+        data = json.loads(path.read_text())
+        if data is None:
+            raise ValueError("null state")
+        return data
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError):
+        raise RuntimeError("state file could not be read: %s; restore it before continuing" % path.name) from None
+
+
+class RunLock:
+    def __init__(self, path: Path):
+        self.path = path
+
+    def __enter__(self) -> RunLock:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            message = "another operation is running or was interrupted; reconcile %s" % self.path.name
+            raise RuntimeError(message) from None
+        os.close(fd)
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.path.unlink()
+
+
+class WriteJournal:
+    """Record intent before sending; an interrupted write can only be reconciled by reads."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        self.records = read_json(path) if path and path.exists() else {}
+        if not isinstance(self.records, dict):
+            raise RuntimeError("write journal is unreadable; reconcile it before continuing")
+
+    def save(self) -> None:
+        if self.path:
+            write_json(self.path, self.records)
+
+    def perform(self, key: str, call: Callable[[], Any], reconcile: Callable[[], Any] | None = None) -> Any:
+        if self.path:
+            with RunLock(self.path.with_suffix(".lock")):
+                self.records = read_json(self.path) if self.path.exists() else {}
+                if not isinstance(self.records, dict):
+                    raise RuntimeError("write journal is unreadable; reconcile it before continuing")
+                return self._perform(key, call, reconcile)
+        return self._perform(key, call, reconcile)
+
+    def _perform(self, key: str, call: Callable[[], Any], reconcile: Callable[[], Any] | None = None) -> Any:
+        if key in self.records:
+            record = self.records[key]
+            if not isinstance(record, dict) or record.get("status") not in ("done", "pending"):
+                raise RuntimeError("write journal entry is malformed; reconcile it before continuing")
+            if record["status"] == "done":
+                return record["result"]
+            result = reconcile() if reconcile else None
+            if result is None:
+                raise RuntimeError("external write outcome is uncertain; reconcile it before continuing")
+        else:
+            self.records[key] = {"status": "pending"}
+            self.save()
+            result = call()
+        self.records[key] = {"status": "done", "result": result}
+        self.save()
+        return result
 
 
 class State:
     def __init__(self, root: Path):
         self.root = Path(root)
-        self.records: dict[str, dict[str, Any]] = read_json(self.root / "pages.json") or {}
+        data = read_json(self.root / "pages.json")
+        if data is not None and (not isinstance(data, dict) or any(not isinstance(r, dict) for r in data.values())):
+            raise RuntimeError("page state is malformed; restore pages.json before continuing")
+        self.records: dict[str, dict[str, Any]] = data if data is not None else {}
 
     def save(self) -> None:
         write_json(self.root / "pages.json", self.records)
@@ -52,7 +122,14 @@ class State:
     def page(self, slug: str, pending: bool = False) -> Page | None:
         """The published build, or with pending=True the build waiting for review or publish."""
         data = read_json(self._page_path(slug, pending))
-        return Page.from_json(data) if data else None
+        if data is None:
+            return None
+        try:
+            if not isinstance(data, dict):
+                raise ValueError("expected a page object")
+            return Page.from_json(data)
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("saved build is malformed; restore it before continuing") from None
 
     def store_page(self, page: Page, pending: bool = False) -> None:
         write_json(self._page_path(page.slug, pending), page.to_json())
@@ -74,9 +151,17 @@ class State:
     def events(self) -> list[dict[str, Any]]:
         try:
             lines = (self.root / "ledger.jsonl").read_text().splitlines()
-        except OSError:
+        except FileNotFoundError:
             return []
-        return [json.loads(x) for x in lines if x.strip()]
+        except OSError:
+            raise RuntimeError("ledger.jsonl could not be read; restore it before continuing") from None
+        try:
+            events = [json.loads(x) for x in lines if x.strip()]
+            if any(not isinstance(e, dict) for e in events):
+                raise ValueError("expected event objects")
+            return events
+        except ValueError:
+            raise RuntimeError("ledger.jsonl is malformed; restore it before continuing") from None
 
     def new_pages_on(self, day: dt.date) -> int:
         return sum(1 for e in self.events()

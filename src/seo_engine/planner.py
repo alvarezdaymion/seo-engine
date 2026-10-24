@@ -71,7 +71,7 @@ def page_slug(answer: RecordedAnswer, records: dict[str, dict[str, Any]]) -> str
 
 def held_key(answer: RecordedAnswer, rules_sha: str) -> str:
     """A held build is retried only when the transcript, its approval or the rule pack changes."""
-    return "%s:%s:%s" % (answer.transcript_sha256, answer.approval.get("on", ""), rules_sha)
+    return "%s:%s:%s" % (answer.revision_sha256, answer.approval.get("on", ""), rules_sha)
 
 
 def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], records: dict[str, dict[str, Any]],
@@ -89,7 +89,7 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
             return "refused", "recording %s is %s" % (answer.id, problems[0])
         if answer.id in claimed:
             return "covered", "same recording as a line above (%s)" % answer.id
-        if rec and (rec.get("live") or rec.get("status") in ("in_review", "merged")):
+        if rec and (rec.get("live") or rec.get("status") in ("opening_review", "in_review", "merged")):
             return "covered", "recording %s already has a page (%s)" % (answer.id, rec.get("status"))
         if rec and rec.get("status") in ("held", "closed") and rec.get("held_key") == held_key(answer, rules_sha):
             return "held", "recording %s: %s" % (answer.id, rec.get("reason", "held"))
@@ -134,7 +134,7 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
             claimed.add(answer.id)
             builds.append((answer, None, line))
 
-    pending = next((r for r in records.values() if r.get("status") in ("in_review", "merged")), None)
+    pending = next((r for r in records.values() if r.get("status") in ("opening_review", "in_review", "merged")), None)
     action, note = None, ""
     if pending:
         action = Action("finish", pending["slug"], "%s change from an earlier run" % pending["status"])

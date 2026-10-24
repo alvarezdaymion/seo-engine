@@ -237,6 +237,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print('  %-16s %-34s "%s"' % (a.id, "approved" if not why else "; ".join(why)[:34], a.question[:60]))
     for e in errors:
         print("  skipped: %s" % e)
+    if errors:
+        problems.append("answers")
     try:
         pack = load_rules(cfg.path(cfg["claims"]["rules"]))
         counts = "%s, %s" % (_plural(len(pack.rules), "rule"), _plural(len(pack.disclosures), "disclosure"))
@@ -264,7 +266,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     p = cfg["publish"]
     if p["target"] == "shopify":
         ok, state = _env("SHOPIFY_STORE", "SHOPIFY_ADMIN_TOKEN")
-        if not ok:
+        if not ok and p["mode"] == "live":
             problems.append("publish")
     elif p["target"] == "git":
         state = "%s files committed to %s through review" % (cfg["static"]["format"], rc["repo"] or "the review repo")
@@ -295,11 +297,11 @@ def cmd_approve(args: argparse.Namespace) -> int:
         return 1
     answer = approve(path, args.by, dt.date.today())
     left = approval_problems(answer)
-    print("Approved %s, bound to transcript sha256 %s..." % (answer.id, answer.transcript_sha256[:12]))
+    print("Approved %s, bound to recording revision sha256 %s..." % (answer.id, answer.revision_sha256[:12]))
     if left:
         print("It still cannot back a page: %s" % "; ".join(left))
         return 1
-    print("Editing the transcript from now on withdraws this approval.")
+    print("Editing the transcript or publication metadata from now on withdraws this approval.")
     return 0
 
 
@@ -334,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="validate config, rule pack and recorded answers; show which credentials are set")
     c.add_argument("--config", default="seo-engine.toml")
     c.set_defaults(fn=cmd_check)
-    a = sub.add_parser("approve", help="approve a recorded answer, bound to its current transcript")
+    a = sub.add_parser("approve", help="approve a recorded answer's transcript and publication metadata")
     a.add_argument("id")
     a.add_argument("--by", default="owner", help="who approved it, kept in the answer file")
     a.add_argument("--config", default="seo-engine.toml")

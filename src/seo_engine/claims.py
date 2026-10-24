@@ -87,12 +87,23 @@ def check(page: Page, pack: RulePack) -> list[Finding]:
             if rule.kind not in kinds or (rule.kind == "needs_source" and cited):
                 continue
             hit = rule.hit(text)
+            if hit and where == "description" and rule.kind == "needs_source" and any(
+                s.sources and rule.hit(s.text) == hit and (text in s.text or s.text in text)
+                for s in page.all_sentences()
+            ):
+                continue
             if hit and (rule.id, text) not in seen:
                 seen.add((rule.id, text))
                 found.append(Finding(rule.id, rule.kind, rule.reason, where, text, hit))
 
     scan(page.question, "title", ("banned", "needs_source"))
-    scan(page.description, "description", ("banned",))
+    scan(page.description, "description", ("banned", "needs_source"))
+    for name in ("speaker_name", "speaker_role", "site_name", "recorded_on", "published_on"):
+        scan(getattr(page, name), name, ("banned", "needs_source"))
+    for source in page.sources:
+        scan(source["title"], "source", ("banned", "needs_source"))
+    for disclosure in page.disclosures:
+        scan(disclosure, "disclosure", ("banned", "needs_source"))
     for s in page.answer:
         scan(s.text, "answer", ("banned", "needs_source"), cited=bool(s.sources))
     for para in page.transcript:
@@ -141,7 +152,7 @@ def fix(page: Page, findings: list[Finding], answer: RecordedAnswer, pack: RuleP
                 actions.append('cited approved source [%d] %s for "%s"' % (n, source.url, _short(f.text)))
             else:
                 _remove(page, f.text)
-                rederive = rederive or f.text in page.description
+                rederive = True
                 why = 'banned phrase "%s"' % f.match if f.kind == "banned" else "no approved source"
                 actions.append('removed "%s" (%s; a speaker is never reworded)' % (_short(f.text), why))
     if rederive:

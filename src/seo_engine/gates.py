@@ -1,8 +1,8 @@
 """The gates every change passes before it is merged or published.
 
 Content gates are checked again right before a merge or a publish, not only at build time, so a
-recording whose approval was withdrawn or whose transcript changed in the meantime stops the
-release. The GitHub gates (open, head, files, checks, mergeable) live in review.py.
+recording whose approval was withdrawn or whose revision changed in the meantime stops the
+release. The GitHub repository, branch, file and check gates live in review.py.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ def recording_gate(page: Page, answers: list[RecordedAnswer]) -> Gate:
     problems = approval_problems(answer)
     if not problems and answer and answer.transcript_sha256 != page.transcript_sha256:
         problems = ["the page was built from a different transcript"]
+    if not problems and answer and answer.revision_sha256 != page.revision_sha256:
+        problems = ["the page was built from a different recording revision"]
     return Gate("recording", not problems, "; ".join(problems) or "%s approved" % page.recording_id)
 
 

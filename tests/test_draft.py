@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 
 from seo_engine import config
@@ -42,9 +43,9 @@ def test_template_mode_never_calls_a_model():
 
 def test_grounded_model_draft_is_used_and_may_tidy():
     client = FakeClient([{"text": "A dripping kitchen faucet usually means the cartridge has worn out.", "from": [2]},
-                         {"text": "Hard water wears those parts faster.", "from": [3]}])
+                         {"text": TRANSCRIPT[2], "from": [3]}])
     d = make_draft("Why is my faucet dripping?", TRANSCRIPT, MODEL, 2, client)
-    assert d.method == "model" and d.sentences[1] == "Hard water wears those parts faster."
+    assert d.method == "model" and d.sentences[1] == TRANSCRIPT[2]
     call = client.calls[0]
     assert call["model"] == "claude-opus-5-5" and call["fallbacks"] == "default"
     assert call["betas"] == ["server-side-fallback-2026-07-01"]
@@ -84,3 +85,27 @@ def test_fallbacks_can_be_turned_off():
     client = FakeClient([{"text": TRANSCRIPT[1], "from": [2]}])
     make_draft("q", TRANSCRIPT, {**MODEL, "fallbacks": False}, 2, client)
     assert "fallbacks" not in client.calls[0] and "betas" not in client.calls[0]
+
+
+def test_sdk_retries_are_disabled_for_metered_requests(monkeypatch):
+    options = []
+    client = FakeClient([{"text": TRANSCRIPT[1], "from": [2]}])
+
+    def factory(**kwargs):
+        options.append(kwargs)
+        return client
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=factory))
+    assert make_draft("question", TRANSCRIPT, MODEL, 2).method == "model"
+    assert options == [{"max_retries": 0}]
+
+
+def test_unexpected_model_errors_do_not_expose_credentials():
+    client = FakeClient()
+
+    def fail(**kwargs):
+        raise RuntimeError("synthetic-secret-token")
+
+    client.beta.messages.create = fail
+    result = make_draft("question", TRANSCRIPT, MODEL, 2, client)
+    assert result.method == "template" and "synthetic-secret-token" not in result.note

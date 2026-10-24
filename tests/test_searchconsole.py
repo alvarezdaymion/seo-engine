@@ -79,6 +79,13 @@ def test_an_access_token_skips_the_exchange(monkeypatch):
     assert all(c[1] != TOKEN_URI for c in fake.calls)
 
 
+def test_pagination_limit_is_unavailable_data(tmp_path, monkeypatch):
+    monkeypatch.setattr("seo_engine.searchconsole.MAX_PAGES", 1)
+    fake = FakeGoogle([[row("2026-03-01", "synthetic question")]])
+    with pytest.raises(RuntimeError, match="pagination"):
+        make(fake, tmp_path, row_limit=1).fetch(dt.date(2026, 3, 1), dt.date(2026, 3, 2))
+
+
 def test_errors_never_include_the_token(tmp_path):
     def failing(method, url, headers, body, timeout):
         if url == TOKEN_URI:

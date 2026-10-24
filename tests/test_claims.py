@@ -10,6 +10,19 @@ DISCLOSURE = PACK.disclosures[0][1]
 STAT = "A faucet that drips once a second wastes about 5 percent of the water a home uses."
 
 
+@pytest.mark.parametrize("field", ["speaker_name", "speaker_role", "site_name", "sources", "disclosures"])
+def test_visible_metadata_is_checked(tmp_path, field):
+    page = page_for(write_answer(tmp_path))
+    value = "Best in town"
+    if field == "sources":
+        page.sources = [{"title": value, "url": "https://www.example.org/source"}]
+    elif field == "disclosures":
+        page.disclosures.append(value)
+    else:
+        setattr(page, field, value)
+    assert any(f.kind == "banned" and f.text == value for f in check(page, PACK))
+
+
 def page_for(answer, sentences=None, disclosures=(DISCLOSURE,)):
     kept, _ = kept_transcript(answer)
     flat = [s for para in kept for s in para]
@@ -43,7 +56,7 @@ def test_the_fix_cites_a_source_approved_with_the_recording(tmp_path):
 def test_without_an_approved_source_the_sentence_is_removed_not_reworded(tmp_path):
     answer = write_answer(tmp_path)
     fixable = "Most faucets can be fixed in under an hour with a replacement cartridge."
-    page = page_for(answer, sentences=[STAT, fixable])
+    page = page_for(answer, sentences=[fixable, STAT])
     fix(page, check(page, PACK), answer, PACK)
     assert check(page, PACK) == []
     assert all(s.text != STAT for s in page.all_sentences())

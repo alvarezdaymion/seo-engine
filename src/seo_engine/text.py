@@ -14,8 +14,7 @@ some such than that that's the their them then there these they this those throu
 up very was we were what when where which while who whom why will with would you you'll you're your
 """.split())
 
-# The only words a model draft may add that are not in the sentences it cites. Everything else
-# (verbs, nouns, numbers, negations, modals, prepositions like "on" or "before") must come from them.
+# Ignored in added-word diagnostics. Whole-sentence grounding separately forbids changes.
 GLUE = frozenset("""
 a an the and but or so it its it's this that that's these those they them their you your we our
 i me my he she him her his is are was were be been being do does did have has had of to
@@ -70,7 +69,7 @@ def content_words(text: str) -> set[str]:
 
 
 def claim_words(text: str) -> set[str]:
-    """Every word except grammatical glue, for checking a draft against its source sentences."""
+    """Every word except grammatical glue, for added-word diagnostics."""
     return {stem(w) for w in words(text) if w not in GLUE}
 
 

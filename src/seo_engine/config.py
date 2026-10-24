@@ -88,6 +88,12 @@ class Config:
 
 
 def validate(data: dict[str, Any]) -> None:
+    for section, key in (("review", "enabled"), ("review", "auto_merge"), ("draft", "fallbacks")):
+        if type(data[section][key]) is not bool:
+            raise ValueError("%s.%s must be a boolean" % (section, key))
+    checks = data["review"]["required_checks"]
+    if not isinstance(checks, list) or any(not isinstance(c, str) or not c.strip() for c in checks):
+        raise ValueError("review.required_checks must be a list of check names")
     site = data["site"]
     site["base_url"] = str(site["base_url"]).rstrip("/")
     if not re.match(r"^https?://[^/\s]+$", site["base_url"]):

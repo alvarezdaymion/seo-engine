@@ -47,11 +47,15 @@ def test_demo_runs_end_to_end_offline(tmp_path):
         action = result["action"]
         assert [f["kind"] for f in action["claims"]["first"]] == ["needs_source"] and action["claims"]["final"] == []
         assert action["review"]["status"] == "merged" and action["live"]["ok"]
-        assert action["live"]["url"].startswith("http://127.0.0.1:")
+        if server is None:
+            assert action["live"]["url"].endswith("index.html")
+        else:
+            assert action["live"]["url"].startswith("http://127.0.0.1:")
         assert (tmp_path / "demo" / "site" / "answers" / action["slug"] / "index.html").exists()
         assert "## Questions to record" in result["report"]["text"] and result["report"]["complete"]
     finally:
-        server.shutdown()
+        if server is not None:
+            server.shutdown()
 
 
 def test_demo_falls_back_to_checking_the_file_without_a_port(tmp_path, monkeypatch):

@@ -144,11 +144,16 @@ class MemoryGitHub:
         if method == "POST" and path == "/pulls":
             n = len(self.pulls) + 1
             self.pulls[n] = {"number": n, "state": "open", "merged": False, "title": data["title"],
-                             "head": {"ref": data["head"], "sha": self.refs[data["head"]]},
-                             "base": {"ref": data["base"]},
+                             "head": {"ref": data["head"], "sha": self.refs[data["head"]],
+                                      "repo": {"full_name": self.repo}},
+                             "base": {"ref": data["base"], "repo": {"full_name": self.repo}},
                              "mergeable": True, "mergeable_state": "clean",
                              "html_url": "memory://%s/pull/%d" % (self.repo, n)}
             return 201, self.pulls[n]
+        if method == "GET" and path == "/pulls":
+            return 200, [p for p in self.pulls.values()
+                         if p["head"]["ref"] == query.get("head", [":"])[0].split(":", 1)[-1]
+                         and p["base"]["ref"] == query.get("base", [""])[0]]
         if seg[0] == "pulls" and len(seg) >= 2 and int(seg[1]) in self.pulls:
             pr = self.pulls[int(seg[1])]
             if method == "GET" and len(seg) == 2:
@@ -167,11 +172,12 @@ class MemoryGitHub:
                 pr.update(state="closed", merged=True)
                 return 200, {"merged": True, "sha": cid}
         if method == "GET" and seg[0] == "commits" and seg[2:] == ["check-runs"]:
-            runs = [{"name": c, "status": "completed", "conclusion": "success"} for c in self.checks]
-            return 200, {"check_runs": runs}
+            runs = [{"id": i, "name": c, "status": "completed", "conclusion": "success",
+                     "head_sha": seg[1], "app": {"id": 10}} for i, c in enumerate(self.checks, 1)]
+            return 200, {"total_count": len(runs), "check_runs": runs}
         if method == "GET" and seg[0] == "contents":
             ref = query.get("ref", ["main"])[0]
-            files = self.trees[self.commits[self.refs[ref]]["tree"]]
+            files = self.trees[self.commits[self.refs.get(ref, ref)]["tree"]]
             name = urllib.parse.unquote("/".join(seg[1:]))
             if name not in files:
                 return 404, {"message": "Not Found"}

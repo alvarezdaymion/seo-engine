@@ -26,6 +26,14 @@ class Row:
     position: float
 
 
+class SearchRows(list[Row]):
+    """Final rows with dates the source confirms; dates absent from coverage remain unknown."""
+
+    def __init__(self, rows: Iterable[Row], covered_dates: Iterable[str] | None = None):
+        super().__init__(rows)
+        self.covered_dates = frozenset(covered_dates if covered_dates is not None else (r.date for r in self))
+
+
 @dataclass
 class Totals:
     clicks: float = 0.0
@@ -81,6 +89,7 @@ def non_brand(rows: Iterable[Row], brand_terms: list[str]) -> list[Row]:
 
 def latest_date(rows: Iterable[Row]) -> dt.date | None:
     dates = [r.date for r in rows]
+    dates.extend(getattr(rows, "covered_dates", ()))
     return dt.date.fromisoformat(max(dates)) if dates else None
 
 
@@ -117,4 +126,4 @@ class CsvSource:
             for rec in csv.DictReader(f):
                 rows.append(Row(rec["date"], rec["query"], rec["page"], float(rec["clicks"] or 0),
                                 float(rec["impressions"] or 0), float(rec["position"] or 0)))
-        return between(rows, start, end)
+        return SearchRows(between(rows, start, end))

@@ -106,3 +106,34 @@ def test_file_fetch(tmp_path):
     (tmp_path / "index.html").write_text("<p>hi</p>")
     assert file_fetch(str(tmp_path)).status == 200
     assert file_fetch(str(tmp_path / "missing.html")).status == 404
+
+
+@pytest.mark.parametrize("author", [[{"name": "Sam Placeholder"}], "Sam Placeholder", 3, None])
+def test_schema_author_shapes_never_crash(tmp_path, author):
+    page = make_page(tmp_path)
+    schema = json_ld(page)
+    schema["@graph"][0]["author"] = author
+    body = re.sub(r'(<script type="application/ld\+json">).*?(</script>)',
+                  lambda m: m[1] + json.dumps(schema) + m[2], render_html(page), flags=re.S)
+    result = check(expected_for(page, URL), serve(body))
+    assert result.ok == isinstance(author, list)
+
+
+@pytest.mark.parametrize("graph", [None, 3, "bad graph", {}])
+def test_malformed_schema_graph_is_a_failed_check(tmp_path, graph):
+    page = make_page(tmp_path)
+    body = re.sub(r'(<script type="application/ld\+json">).*?(</script>)',
+                  lambda m: m[1] + json.dumps({"@graph": graph}) + m[2], render_html(page), flags=re.S)
+    assert not check(expected_for(page, URL), serve(body)).ok
+
+
+@pytest.mark.parametrize("directive", ["none", "NONE, follow", "googlebot: none"])
+@pytest.mark.parametrize("location", ["meta", "header"])
+def test_robots_none_is_not_indexable(tmp_path, directive, location):
+    page = make_page(tmp_path)
+    body, headers = render_html(page), {}
+    if location == "meta":
+        body = body.replace("<head>", '<head><meta name="robots" content="%s">' % directive)
+    else:
+        headers["X-Robots-Tag"] = directive
+    assert "noindex is set" in check(expected_for(page, URL), serve(body, headers=headers)).problems

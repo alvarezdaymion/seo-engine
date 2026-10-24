@@ -23,12 +23,14 @@ class Published:
 
 
 def build_publisher(cfg: Any, transport: Any = None) -> Any:
-    from .shopify import ShopifyPublisher
+    from .shopify import ShopifyPreview, ShopifyPublisher
     from .static import GitDeployPublisher, StaticPublisher
 
     target = cfg["publish"]["target"]
     s = cfg["static"]
     if target == "shopify":
+        if cfg["publish"]["mode"] != "live":
+            return ShopifyPreview()
         return ShopifyPublisher(api_version=cfg["shopify"]["api_version"], transport=transport)
     if target == "git":
         return GitDeployPublisher(cfg.path(s["dir"]), s["file"], s["format"])

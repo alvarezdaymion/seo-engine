@@ -1,8 +1,8 @@
 """The weekly report: what search did last week, what the engine did, and what it needs from you.
 
 Search numbers cover the last complete Monday-Sunday week against the week before, with brand
-queries excluded. When Search Console's final data does not reach the end of that week yet, the
-section says so instead of showing a partial week. The report also lists the questions that have
+queries excluded. Both weeks need source coverage for every day; missing coverage is unavailable,
+never zero. The report also lists the questions that have
 search demand but no approved recorded answer: record one, approve it, and the engine builds the
 page.
 
@@ -38,8 +38,12 @@ def _change(cur: float, prev: float, fmt: str = "%+d") -> str:
 
 def build(cfg: Any, rows: list[Row], latest: dt.date | None, today: dt.date, records: dict[str, dict[str, Any]],
           events: list[dict[str, Any]], plan: Plan | None, opportunities: list[Opportunity],
-          answers: list[RecordedAnswer], search_error: str = "") -> tuple[str, dict[str, Any]]:
+          answers: list[RecordedAnswer], search_error: str = "",
+          coverage: set[str] | None = None) -> tuple[str, dict[str, Any]]:
     week, prev_week = complete_weeks(today)
+    coverage = coverage if coverage is not None else set(getattr(rows, "covered_dates", (r.date for r in rows)))
+    if coverage and latest is None:
+        latest = dt.date.fromisoformat(max(coverage))
     meta: dict[str, Any] = {"week": [week[0].isoformat(), week[1].isoformat()], "complete": False}
     out = ["# Weekly search report: %s" % cfg["site"]["name"], "",
            "Week of %s to %s, compared with %s to %s. Brand queries are excluded."
@@ -49,6 +53,9 @@ def build(cfg: Any, rows: list[Row], latest: dt.date | None, today: dt.date, rec
     elif latest is None or latest < week[1]:
         out.append("Not available yet: final Search Console data runs through %s and the week ends %s. "
                    "A partial week is never reported." % (latest or "no data", week[1]))
+    elif not all((prev_week[0] + dt.timedelta(days=i)).isoformat() in coverage for i in range(14)):
+        out.append("Search data is unavailable for one or more days in the reporting weeks. "
+                   "Missing days are never treated as zero.")
     else:
         nb = non_brand(rows, cfg["site"]["brand_terms"])
         c, p = total(between(nb, *week)), total(between(nb, *prev_week))

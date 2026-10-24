@@ -18,10 +18,10 @@ Run `uv run seo-engine init`. It writes `seo-engine.toml`, `rules.toml` and an e
 2. **Brand terms**: the business name and its variants, so brand searches stay out of the opportunities.
 3. **Where pages go** (`[publish] target`):
    - `static`: HTML (or Markdown) files in a folder that is served as it is or synced to a host.
-   - `git`: the site is a git repo that the host deploys on every merge (Netlify, Cloudflare Pages, GitHub Pages and similar). Needs step 7. Set `[static] format` and `file` to match the site generator, for example `format = "markdown"` and `file = "content/answers/{slug}.md"`, and make sure its templates render the front matter `title`, `description` and `canonical` in the page head.
+   - `git`: the site is a git repo that the host deploys on every merge (Netlify, Cloudflare Pages, GitHub Pages and similar). Configure step 7's review prerequisites now, before selecting `target = "git"`; until then leave the target as `static`. Set `[static] format` and `file` to match the site generator, for example `format = "markdown"` and `file = "content/answers/{slug}.md"`, and make sure its templates render the front matter `title`, `description` and `canonical` in the page head. Keep deployment PRs open until step 8: any merge makes them live.
    - `shopify`: a Shopify page per answer. Set `page_path = "/pages/{slug}"`.
 
-Leave `[publish] mode = "dry-run"`. Done when `uv run seo-engine check` prints `Config OK` and the site you agreed.
+Leave `[publish] mode = "dry-run"`. Shopify previews need no store credentials. Done when `uv run seo-engine check` prints `Config OK` and the site you agreed; missing Search credentials are resolved in step 3. Malformed answer files make the check fail and must be corrected.
 
 ## 3. Connect Search Console
 
@@ -58,7 +58,7 @@ A recorded answer is a customer question someone on the team answered on video. 
 - optional `sources`: links the owner approves, each with the transcript wording it backs (`supports`);
 - optional `target_queries`: search queries this answer is meant for.
 
-Write `answers/<id>.json` and `answers/<id>.txt` (copy the shape of `src/seo_engine/templates/demo/answers/ra-001.json`), and delete the example answer. Then ask the owner to watch each recording and approve it. Run `uv run seo-engine approve <id> --by <name>` only for a recording the owner has told you they watched and approve. The approval is bound to the transcript's SHA-256, so any later transcript edit needs a new approval.
+Write `answers/<id>.json` and `answers/<id>.txt` (copy the shape of `src/seo_engine/templates/demo/answers/ra-001.json`, without copying its approval), and delete the example answer. Then ask the owner to watch each recording and approve it. Run `uv run seo-engine approve <id> --by <name>` only for a recording the owner has told you they watched and approve. Approval binds the transcript and publication metadata: question, speaker, video, thumbnail, recording date, cuts, sources and target queries. Changing them needs a new approval. Older approvals without a revision hash also need this explicit approval; a pending build from an older revision must be rebuilt and reviewed.
 
 Done when `uv run seo-engine check` lists each recording as `approved`.
 
@@ -76,8 +76,8 @@ Repeat for a few days. Done when the owner is happy with the drafts.
 
 1. Pick the repo: for `git`, the site repo; for `static` or `shopify`, any private repo that should keep the page source as a record of what was published.
 2. The owner creates a fine-grained token for that one repo with Contents read and write, Pull requests read and write, and Checks read. Put it in `.env` as `GITHUB_TOKEN`.
-3. Set `[review] enabled = true`, `repo = "owner/name"`, `base`, `path` (the folder inside the repo) and `required_checks` (the names of CI checks that must pass, for example the site build).
-4. Keep `auto_merge = false`. A person merges each pull request; the next run sees the merge and publishes, but only if the merged files are exactly the build the engine approved.
+3. Set `[review] enabled = true`, `repo = "owner/name"`, `base`, `path` (the folder inside the repo) and `required_checks` (the names of CI checks that must pass, for example the site build). Use unique check names: two providers with the same required name block merging. Boolean switches must be TOML booleans, such as `false`, without quotes.
+4. Keep `auto_merge = false`. For static and Shopify, a person merges each pull request; the next live run publishes only if the merged files are exactly the build the engine approved. For Git deployments, keep the PR open until step 8: merging deploys immediately, including while the engine is in dry-run.
 
 Done when a run opens a pull request and prints its merge gates. `auto-merge` (and `publish mode`, while in dry-run) fail by design; `checks` passes once CI has run on the branch.
 
@@ -89,7 +89,9 @@ Only when the owner explicitly asks:
 2. Set `[publish] mode = "live"`. For `git`, raise `[livecheck] attempts` and `wait_seconds` (for example 10 and 30) so the live check covers the deploy.
 3. Optionally, after the owner has reviewed several pull requests, set `auto_merge = true` so the engine merges when every gate passes.
 
-Done when a run prints `Result: published` and `Live check ...: passed`. On Shopify, the first live publish also proves the theme keeps the page body as sent: if the live check fails on the schema or the source marker, the engine hides the page again and the run says which check failed.
+For Git, a person may now merge the reviewed deployment PR; the merge is the deployment boundary. If its live check fails, revert the PR manually. The engine reports the failed deployment and cannot automatically undo a merge.
+
+Done when a run prints `Result: published` and `Live check ...: passed`. On Shopify, the first live publish also proves the theme keeps the page body as sent: if the live check fails on the schema or the source marker, the engine hides the page again and the run says which check failed. Existing Shopify pages stay hidden while body and SEO changes are applied; partial failures restore the previous page or keep it hidden. All targets refuse collisions with content whose engine ownership cannot be verified.
 
 ## 9. Schedule one run a day
 
@@ -99,8 +101,17 @@ Done when `state/last-run.json` updates each day.
 
 ## 10. Optional: deliver the weekly report
 
-Set `[report] send = "webhook"` and put an incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Test with `uv run seo-engine report --send`. The report goes out on `[report] weekday`.
+Set `[report] send = "webhook"` and put an incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Test with `uv run seo-engine report --send`. The report goes out on `[report] weekday`, at most once for each reporting week. If a response is lost, delivery stays held for reconciliation, including for another `report --send`.
 
 ## 11. Optional: the model draft
 
-`uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env` and set `[draft] mode = "model"`. It makes one model request per page built, and nothing else in a run is metered. The model only picks and tidies transcript sentences; a draft that adds a word or drops a negation is rejected and the template is used.
+`uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env` and set `[draft] mode = "model"`. A model attempt is reused for the same recording revision and draft settings; repeated previews do not repeat a charge. The model selects whole sentences in transcript order, with only deterministic filler-sound cleanup. Any shortened, joined or rearranged sentence is rejected and the template is used.
+
+## Recovering interrupted operations
+
+Stop the scheduler and confirm no run is active before touching recovery state. Preserve corrupt files and restore them from a known good copy. A leftover `state/run.lock` or journal lock requires checking the interrupted operation before removing that lock; never clear pending journals just to force a retry.
+
+- `state/github-writes.json` records GitHub writes. The next run can reconcile a lost branch or PR response by reading the matching repository, branch and head. If reconciliation is inconclusive, keep it held until the remote outcome is verified.
+- Each page's `publication` entry in `state/pages.json` records its undo snapshot before Shopify mutations. Verify the remote page and restore its saved body and SEO fields, or keep a new page hidden. Only mark that publication `done` after confirming recovery; an uncertain publication is never retried automatically.
+- `state/report-deliveries.json` records delivery per reporting week. Check the receiver before resolving a pending entry. If receipt is confirmed, mark it `done` with `result: null`; only remove an entry for an intentional retry when non-delivery is established. If the receiver cannot establish the outcome, leave it pending.
+- `state/model-drafts.json` records model attempts. An interrupted request with unknown billing or response stays held; retain it until its outcome is resolved.

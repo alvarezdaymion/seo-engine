@@ -35,7 +35,8 @@ def test_init_check_and_approve(tmp_path, capsys, monkeypatch):
     meta.update(speaker={"name": "Pat Placeholder", "role": "Owner"}, video_url="https://videos.example.com/a.mp4")
     (tmp_path / "answers" / "example-answer.json").write_text(json.dumps(meta))
     assert main(["approve", "example-answer", "--by", "owner"]) == 0
-    assert "Approved example-answer" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Approved example-answer" in output and "publication metadata" in output
     assert main(["approve", "../escape"]) == 1
 
 
@@ -45,6 +46,19 @@ def test_init_keeps_existing_files(tmp_path, capsys, monkeypatch):
     main(["init"])
     assert (tmp_path / "rules.toml").read_text() == 'name = "mine"\n'
     assert "kept rules.toml" in capsys.readouterr().out
+
+
+def test_check_fails_with_a_malformed_answer(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GSC_ACCESS_TOKEN", "synthetic-token")
+    main(["init"])
+    path = tmp_path / "seo-engine.toml"
+    path.write_text(path.read_text().replace('site_url = ""', 'site_url = "sc-domain:example.com"'))
+    (tmp_path / "answers" / "broken.json").write_text("{broken")
+    capsys.readouterr()
+    assert main(["check"]) == 1
+    output = capsys.readouterr().out
+    assert "skipped:" in output and "answers" in output.split("Not ready:")[1]
 
 
 def test_the_example_config_loads_and_matches_the_defaults():
@@ -67,6 +81,13 @@ def test_the_example_config_loads_and_matches_the_defaults():
 def test_config_validation(data, message):
     with pytest.raises(ValueError, match=message.replace("[", r"\[").replace("{", r"\{")):
         config.from_dict(data)
+
+
+@pytest.mark.parametrize("section,key", [("review", "enabled"), ("review", "auto_merge"), ("draft", "fallbacks")])
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, []])
+def test_boolean_switches_require_boolean_values(section, key, value):
+    with pytest.raises(ValueError, match="boolean"):
+        config.from_dict({section: {key: value}})
 
 
 def test_dotenv_next_to_the_config_is_loaded_without_overriding(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..page import Page, render_html, render_markdown
+from ..page import Page, owned_by, render_html, render_markdown
 from . import Published
 
 
@@ -41,8 +41,12 @@ class StaticPublisher:
         rel, content = next(iter(self.files(page).items()))
         dest = self._dest(rel)
         previous = dest.read_text() if dest.exists() else None
+        if previous is not None and not owned_by(previous, page.recording_id):
+            raise PermissionError("refused to replace a file without verified engine ownership: %s" % rel)
         if previous == content:
             return Published("unchanged", str(dest))
+        if getattr(self, "before_write", None):
+            self.before_write()
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_text(content)

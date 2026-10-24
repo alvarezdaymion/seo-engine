@@ -7,17 +7,17 @@ is two files in the answers folder:
               lines cut from the approved edit, and the approval record
   <id>.txt    the transcript
 
-A recording is approved only when approval.status is "approved" AND approval.transcript_sha256
-equals the SHA-256 of the transcript text as it is now (line endings normalized). Editing a
-transcript after approval withdraws the approval until someone approves it again
-(`seo-engine approve <id>`).
+A recording is approved only when its status and both approval hashes match the current
+transcript and publication metadata. Transcript line endings are normalized. Editing either
+the transcript or metadata withdraws approval until someone approves it again
+(`seo-engine approve <id>`). Older approvals without a revision hash fail closed.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,13 @@ class RecordedAnswer:
     def approved(self) -> bool:
         return not approval_problems(self)
 
+    @property
+    def revision_sha256(self) -> str:
+        data = asdict(self)
+        for key in ("approval", "path", "transcript_sha256"):
+            data.pop(key)
+        return sha256(json.dumps(data, sort_keys=True, ensure_ascii=False))
+
 
 def approval_problems(answer: RecordedAnswer | None) -> list[str]:
     """Everything that stops this recording from backing a page. Empty means approved."""
@@ -70,6 +77,8 @@ def approval_problems(answer: RecordedAnswer | None) -> list[str]:
         problems.append('not approved: status is "%s"' % answer.status)
     elif answer.approval.get("transcript_sha256") != answer.transcript_sha256:
         problems.append("transcript changed after approval")
+    elif answer.approval.get("revision_sha256") != answer.revision_sha256:
+        problems.append("recording metadata changed or needs a new approval")
     if not answer.transcript.strip():
         problems.append("transcript is empty")
     if not answer.video_url.startswith("https://"):
@@ -127,13 +136,13 @@ def load_answers(directory: Path) -> tuple[list[RecordedAnswer], list[str]]:
 
 
 def approve(path: Path, by: str, today: dt.date) -> RecordedAnswer:
-    """Record an approval bound to the transcript exactly as it is now."""
+    """Record approval of the transcript and publication metadata exactly as they are now."""
     answer = load_answer(path)
     if not answer.transcript.strip():
         raise ValueError("%s has no transcript to approve" % answer.id)
     meta = json.loads(path.read_text())
     meta["approval"] = {"status": "approved", "by": by, "on": today.isoformat(),
-                        "transcript_sha256": answer.transcript_sha256}
+                        "transcript_sha256": answer.transcript_sha256, "revision_sha256": answer.revision_sha256}
     path.write_text(json.dumps(meta, indent=2) + "\n")
     return load_answer(path)
 

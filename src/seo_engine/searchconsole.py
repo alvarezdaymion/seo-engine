@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from .http import Http, Transport
-from .search import Row
+from .search import Row, SearchRows
 
 API = "https://searchconsole.googleapis.com/webmasters/v3/sites/%s/searchAnalytics/query"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -129,4 +129,6 @@ class SearchConsoleSource:
             if len(page) < self.row_limit:
                 break
             payload["startRow"] += len(page)
-        return rows
+        else:
+            raise RuntimeError("Search Console pagination limit reached; data is unavailable")
+        return SearchRows(rows)
