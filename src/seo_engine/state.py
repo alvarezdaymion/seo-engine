@@ -21,7 +21,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .page import Page, render_html
+from .opportunities import norm_url
+from .page import Page, owned_by, render_html
+from .text import is_slug
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -111,10 +113,60 @@ class State:
         self.records: dict[str, dict[str, Any]] = data if data is not None else {}
 
     def save(self) -> None:
+        saved = read_json(self.root / "pages.json")
+        saved = {} if saved is None else saved
+        if not isinstance(saved, dict) or any(not isinstance(r, dict) for r in saved.values()):
+            raise RuntimeError("page ownership state is malformed; restore it before continuing")
+        for slug, previous in saved.items():
+            if slug not in self.records or self.records[slug].get("recording_id") != previous.get("recording_id"):
+                raise PermissionError("page path ownership cannot be changed or removed")
+        for slug, record in self.records.items():
+            previous = saved.get(slug)
+            if record.get("recording_id") and (previous is None or previous.get("url") != record.get("url")):
+                self.require_owner(slug, record["recording_id"], record.get("url") or "")
         write_json(self.root / "pages.json", self.records)
 
     def record(self, slug: str) -> dict[str, Any]:
         return self.records.setdefault(slug, {"slug": slug})
+
+    def require_owner(self, slug: str, recording_id: str, canonical: str = "") -> None:
+        if (not isinstance(slug, str) or not is_slug(slug)
+                or not isinstance(recording_id, str) or not recording_id):
+            raise PermissionError("page path and recording ownership must be known")
+
+        def verify(key: str, data: Any) -> None:
+            data = data if isinstance(data, dict) else {}
+            url = data.get("canonical", data.get("url"))
+            same_url = canonical and isinstance(url, str) and norm_url(url) == norm_url(canonical)
+            if key == slug or data.get("slug") == slug or same_url:
+                if data.get("recording_id") != recording_id:
+                    raise PermissionError("page path %s belongs to another or unknown recording" % slug)
+
+        try:
+            saved = read_json(self.root / "pages.json")
+        except RuntimeError:
+            raise PermissionError("page ownership state is unreadable; restore it before continuing") from None
+        if saved is not None and (not isinstance(saved, dict) or any(not isinstance(r, dict) for r in saved.values())):
+            raise PermissionError("page ownership state is malformed; restore it before continuing")
+        for records in (saved or {}, self.records):
+            for key, data in records.items():
+                verify(key, data)
+        for path in sorted((self.root / "pages").glob("*.json")):
+            key = path.name.removesuffix(".json").removesuffix(".pending")
+            try:
+                data = read_json(path)
+            except RuntimeError:
+                data = None
+            verify(key, data)
+        draft = self.root / "drafts" / (slug + ".html")
+        try:
+            document = draft.read_text()
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            raise PermissionError("saved draft ownership is unreadable") from None
+        if not owned_by(document, recording_id):
+            raise PermissionError("saved draft belongs to another or unknown recording")
 
     def _page_path(self, slug: str, pending: bool) -> Path:
         return self.root / "pages" / ("%s%s.json" % (slug, ".pending" if pending else ""))
@@ -132,11 +184,13 @@ class State:
             raise RuntimeError("saved build is malformed; restore it before continuing") from None
 
     def store_page(self, page: Page, pending: bool = False) -> None:
+        self.require_owner(page.slug, page.recording_id, page.canonical)
         write_json(self._page_path(page.slug, pending), page.to_json())
         if not pending:
             self._page_path(page.slug, True).unlink(missing_ok=True)
 
     def store_draft(self, page: Page) -> Path:
+        self.require_owner(page.slug, page.recording_id, page.canonical)
         path = self.root / "drafts" / ("%s.html" % page.slug)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_html(page))

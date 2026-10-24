@@ -120,6 +120,12 @@ class Engine:
         except Exception:
             return [Gate("claims", False, "current rule pack could not be loaded")]
         gates = content_gates(page, self.answers, check(page, self.pack))
+        try:
+            self.state.require_owner(page.slug, page.recording_id, page.canonical)
+        except PermissionError as e:
+            gates.append(Gate("ownership", False, str(e)))
+        else:
+            gates.append(Gate("ownership", True, "page path belongs to this recording"))
         if errors:
             gates.append(Gate("recordings", False, "current recorded answers could not all be loaded"))
         return gates
@@ -157,7 +163,12 @@ class Engine:
         left = int(self.cfg["publish"]["max_new_pages_per_day"]) - self.state.new_pages_on(self.today)
         self.plan = plan(self.opps, self.answers, self.state.records, failing,
                          threshold=float(self.cfg["answers"]["match_threshold"]),
-                         rules_sha=self.pack.sha256 if self.pack else "", new_pages_left=left, today=self.today)
+                         rules_sha=self.pack.sha256 if self.pack else "", new_pages_left=left, today=self.today,
+                         check_slug=lambda slug, owner: self.state.require_owner(slug, owner, self.cfg.page_url(slug)))
+        for problem in self.plan.blockers:
+            self.blocker(problem)
+        if self.plan.blockers and self.plan.action is None:
+            self.r["status"] = "held"
         self.r["opportunities"] = [o.to_json() for o in self.opps[:10]]
         self.r["plan"] = {"lines": [ln.to_json() for ln in self.plan.lines], "note": self.plan.note,
                           "action": self.plan.action.kind if self.plan.action else None}
@@ -234,6 +245,7 @@ class Engine:
     def build(self, a: Action) -> None:
         answer = a.answer
         assert answer is not None
+        self.state.require_owner(a.slug, answer.id, self.cfg.page_url(a.slug))
         kept, cut = kept_transcript(answer)
         flat = [s for para in kept for s in para]
         def draft_once() -> Draft:
@@ -284,6 +296,9 @@ class Engine:
         self.ship(page, answer, new=False, title="Update description: %s" % page.question)
 
     def ship(self, page: Page, answer: RecordedAnswer, *, new: bool, title: str) -> None:
+        self.state.require_owner(page.slug, page.recording_id, page.canonical)
+        if page.recording_id != answer.id:
+            raise PermissionError("the build and recording owners do not match")
         act = self.r["action"]
         first = check(page, self.pack)
         findings, fixes = first, []
@@ -319,6 +334,7 @@ class Engine:
         self.open_review(page, rec)
 
     def open_review(self, page: Page, rec: dict[str, Any]) -> None:
+        self.state.require_owner(page.slug, page.recording_id, page.canonical)
         act, review, opening = self.r["action"], self.review(), rec["opening"]
         title = opening["title"]
         pr = review.open_pull_request(page.slug, opening["files"], title, opening["body"], opening["previous"])
@@ -330,6 +346,7 @@ class Engine:
         self.try_merge(page, rec)
 
     def try_merge(self, page: Page, rec: dict[str, Any]) -> None:
+        self.state.require_owner(page.slug, page.recording_id, page.canonical)
         act, review, rc = self.r["action"], self.review(), self.cfg["review"]
         pr = rec["pr"]
         gates = review.gates(pr["number"], pr["head"], pr["files"], list(rc["required_checks"]),
@@ -361,6 +378,7 @@ class Engine:
             self.r["action"]["status"] = self.r["status"] = "held"
             self.blocker("finish %s: the pending build is missing" % a.slug)
             return
+        self.state.require_owner(page.slug, page.recording_id, page.canonical)
         pending_key = rec.get("pending_key")
         if pending_key is None:
             answer = self.answer(page.recording_id)
@@ -417,6 +435,9 @@ class Engine:
     # ---- publish -------------------------------------------------------------------------
 
     def publish(self, page: Page, rec: dict[str, Any], *, new: bool, rollback: bool = True) -> None:
+        self.state.require_owner(page.slug, page.recording_id, page.canonical)
+        if rec.get("recording_id") not in (None, page.recording_id):
+            raise PermissionError("the publication record belongs to another recording")
         act, lc = self.r["action"], self.cfg["livecheck"]
         gates = self.release_gates(page)
         act["publish_gates"] = [g.to_json() for g in gates]

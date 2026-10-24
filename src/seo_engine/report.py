@@ -97,6 +97,10 @@ def build(cfg: Any, rows: list[Row], latest: dt.date | None, today: dt.date, rec
     if not opportunities:
         out.append("None found in the current data.")
 
+    if plan and plan.blockers:
+        out += ["", "## Page ownership blockers", ""]
+        out += ["- " + problem for problem in plan.blockers]
+
     refused = plan.refused if plan else []
     meta["questions_to_record"] = len(refused)
     out += ["", "## Questions to record", "",

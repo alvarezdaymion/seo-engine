@@ -12,6 +12,16 @@ def test_corrupt_page_state_is_preserved_and_blocks_loading(tmp_path, content):
     assert path.read_text() == content
 
 
+@pytest.mark.parametrize("content", ["[]", '""', "0"])
+def test_changed_page_state_is_validated_again_before_saving(tmp_path, content):
+    state = State(tmp_path)
+    path = tmp_path / "pages.json"
+    path.write_text(content)
+    with pytest.raises(RuntimeError):
+        state.save()
+    assert path.read_text() == content
+
+
 @pytest.mark.parametrize("content", ['{"operation":', '[]'])
 def test_corrupt_write_journal_is_preserved(tmp_path, content):
     path = tmp_path / "writes.json"

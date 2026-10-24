@@ -15,6 +15,7 @@ record. Pages the engine did not build are reported, never edited.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,19 +55,27 @@ class Plan:
     action: Action | None
     lines: list[Line] = field(default_factory=list)
     note: str = ""
+    blockers: list[str] = field(default_factory=list)
 
     @property
     def refused(self) -> list[Line]:
-        return [ln for ln in self.lines if ln.verdict == "refused"]
+        return [ln for ln in self.lines if ln.verdict == "refused" and ln.detail not in self.blockers]
 
 
-def page_slug(answer: RecordedAnswer, records: dict[str, dict[str, Any]]) -> str:
+def page_slug(answer: RecordedAnswer, records: dict[str, dict[str, Any]],
+              check_slug: Callable[[str, str], None] | None = None) -> str:
     """The page's URL slug, from the question. Never reuses a slug that belongs to another recording."""
     slug = slugify(answer.question) or answer.id
-    rec = records.get(slug)
-    if rec and rec.get("recording_id") not in (None, answer.id):
-        slug = "%s-%s" % (slug, answer.id)
-    return slug
+    for candidate in (slug, "%s-%s" % (slug, answer.id)):
+        if candidate in records and records[candidate].get("recording_id") != answer.id:
+            continue
+        if check_slug is not None:
+            try:
+                check_slug(candidate, answer.id)
+            except PermissionError:
+                continue
+        return candidate
+    raise PermissionError("recording %s: both page slug candidates belong to another or unknown recording" % answer.id)
 
 
 def held_key(answer: RecordedAnswer, rules_sha: str) -> str:
@@ -75,12 +84,15 @@ def held_key(answer: RecordedAnswer, rules_sha: str) -> str:
 
 
 def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], records: dict[str, dict[str, Any]],
-         failing: list[str], *, threshold: float, rules_sha: str, new_pages_left: int, today: dt.date) -> Plan:
-    by_recording = {r.get("recording_id"): r for r in records.values()}
+         failing: list[str], *, threshold: float, rules_sha: str, new_pages_left: int, today: dt.date,
+         check_slug: Callable[[str, str], None] | None = None) -> Plan:
+    by_recording = {r["recording_id"]: r for r in records.values() if isinstance(r.get("recording_id"), str)}
     lines: list[Line] = []
     builds: list[tuple[RecordedAnswer, Opportunity | None, Line]] = []
     snippets: list[tuple[Opportunity, Line]] = []
     claimed: set[str] = set()
+    slugs: dict[str, str] = {}
+    blockers: list[str] = []
 
     def build_verdict(answer: RecordedAnswer) -> tuple[str, str]:
         problems = approval_problems(answer)
@@ -93,6 +105,13 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
             return "covered", "recording %s already has a page (%s)" % (answer.id, rec.get("status"))
         if rec and rec.get("status") in ("held", "closed") and rec.get("held_key") == held_key(answer, rules_sha):
             return "held", "recording %s: %s" % (answer.id, rec.get("reason", "held"))
+        try:
+            slugs[answer.id] = page_slug(answer, records, check_slug)
+        except PermissionError as e:
+            detail = str(e)
+            if detail not in blockers:
+                blockers.append(detail)
+            return "refused", detail
         return "build", "from recording %s (%s)" % (answer.id, answer.speaker_name)
 
     for opp in opportunities:
@@ -145,12 +164,14 @@ def plan(opportunities: list[Opportunity], answers: list[RecordedAnswer], record
     elif builds:
         answer, opp, line = builds[0]
         line.chosen = True
-        action = Action("build", page_slug(answer, records), line.detail, answer, opp)
+        action = Action("build", slugs[answer.id], line.detail, answer, opp)
     if action is None and snippets:
         opp, line = snippets[0]
         line.chosen = True
         slug = next((s for s, r in records.items() if norm_url(r.get("url", "")) == norm_url(opp.page)), "")
         action = Action("snippet", slug, "low CTR at position %.1f" % opp.position, opportunity=opp)
+    if action is None and blockers and not note:
+        note = "page paths are reserved; reconcile ownership or approve a different question"
     if action is None and not note:
         note = "nothing to do: no approved recording is waiting and every page passes"
-    return Plan(action, lines, note)
+    return Plan(action, lines, note, blockers)
