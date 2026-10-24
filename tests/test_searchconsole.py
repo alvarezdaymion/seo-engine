@@ -6,7 +6,7 @@ import urllib.parse
 import pytest
 
 from seo_engine.http import HttpError
-from seo_engine.searchconsole import SCOPE, TOKEN_URI, SearchConsoleSource, service_account_assertion
+from seo_engine.searchconsole import SCOPE, TOKEN_URI, SearchConsoleSource, openssl_signer, service_account_assertion
 
 CREDS = {"client_email": "reader@example.com", "private_key": "not-a-real-key",
          "token_uri": TOKEN_URI}
@@ -105,3 +105,49 @@ def test_credentials_and_token_uri_are_checked(tmp_path, monkeypatch):
     key.write_text(json.dumps({**CREDS, "token_uri": "https://token.example.net/"}))
     with pytest.raises(RuntimeError, match="token_uri"):
         SearchConsoleSource("sc-domain:example.com", credentials_file=str(key))
+
+
+def test_signing_errors_never_expose_the_private_key():
+    def signer(key, data):
+        raise ValueError("could not sign with " + key)
+
+    with pytest.raises(RuntimeError) as caught:
+        service_account_assertion(CREDS, 1_800_000_000, signer)
+    assert CREDS["private_key"] not in str(caught.value)
+
+
+@pytest.mark.parametrize("token", [ACCESS + "\n", " " + ACCESS, ACCESS + "\t", ACCESS + "é", {"token": ACCESS}])
+def test_issued_tokens_are_validated_before_an_api_request(tmp_path, token):
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append(url)
+        return 200, json.dumps({"access_token": token}).encode()
+
+    with pytest.raises(RuntimeError) as caught:
+        make(transport, tmp_path).fetch(dt.date(2026, 3, 1), dt.date(2026, 3, 2))
+    assert calls == [TOKEN_URI] and ACCESS not in str(caught.value)
+
+
+def test_invalid_token_expiry_never_exposes_the_response(tmp_path):
+    def transport(*args):
+        return 200, json.dumps({"access_token": ACCESS, "expires_in": ACCESS}).encode()
+
+    with pytest.raises(RuntimeError) as caught:
+        make(transport, tmp_path).fetch(dt.date(2026, 3, 1), dt.date(2026, 3, 2))
+    assert ACCESS not in str(caught.value)
+
+
+@pytest.mark.parametrize("key", ["", " ", "synthetic-key\x00", "synthetic-keyé", {"key": "synthetic-key"}])
+def test_invalid_private_keys_are_rejected_before_signing(monkeypatch, key):
+    calls = []
+    monkeypatch.setattr("seo_engine.searchconsole.shutil.which", lambda name: "openssl")
+
+    def temporary():
+        calls.append(1)
+        raise AssertionError("must not create a signing file")
+
+    monkeypatch.setattr("seo_engine.searchconsole.tempfile.TemporaryDirectory", temporary)
+    with pytest.raises(RuntimeError) as caught:
+        openssl_signer(key, b"synthetic assertion")
+    assert calls == [] and "synthetic-key" not in str(caught.value)

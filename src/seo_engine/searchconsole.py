@@ -31,7 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .http import Http, Transport
+from .http import Http, Transport, credential
 from .search import Row, SearchRows
 
 API = "https://searchconsole.googleapis.com/webmasters/v3/sites/%s/searchAnalytics/query"
@@ -46,26 +46,47 @@ def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+def _validate_private_key(key: Any) -> None:
+    if (not isinstance(key, str) or not key.strip()
+            or any(not 32 <= ord(c) <= 126 and c not in "\r\n" for c in key)):
+        raise RuntimeError("the service-account private_key must be nonempty ASCII text")
+
+
+def _validate_credentials(creds: dict[str, Any]) -> None:
+    if not isinstance(creds, dict):
+        raise RuntimeError("the Search Console service-account key must be an object")
+    credential(creds.get("client_email"), "service-account client_email")
+    _validate_private_key(creds.get("private_key"))
+
+
 def service_account_assertion(creds: dict[str, Any], now: int, signer: Signer) -> str:
     """A one-hour JWT asking for read-only Search Console access."""
-    header = {"alg": "RS256", "typ": "JWT"}
-    claims = {"iss": creds["client_email"], "scope": SCOPE, "aud": TOKEN_URI, "iat": now, "exp": now + 3600}
-    signing_input = "%s.%s" % (_b64(json.dumps(header, separators=(",", ":")).encode()),
-                               _b64(json.dumps(claims, separators=(",", ":")).encode()))
-    return signing_input + "." + _b64(signer(creds["private_key"], signing_input.encode()))
+    try:
+        _validate_credentials(creds)
+        header = {"alg": "RS256", "typ": "JWT"}
+        claims = {"iss": creds["client_email"], "scope": SCOPE, "aud": TOKEN_URI, "iat": now, "exp": now + 3600}
+        signing_input = "%s.%s" % (_b64(json.dumps(header, separators=(",", ":")).encode()),
+                                   _b64(json.dumps(claims, separators=(",", ":")).encode()))
+        return signing_input + "." + _b64(signer(creds["private_key"], signing_input.encode()))
+    except Exception:
+        raise RuntimeError("the Search Console token request could not be signed") from None
 
 
 def openssl_signer(private_key: str, data: bytes) -> bytes:
     """RS256 signature via `openssl dgst`. The key sits in a private temp dir for the call only."""
-    if not shutil.which("openssl"):
-        raise RuntimeError("the openssl command is needed to sign the Search Console token request")
-    with tempfile.TemporaryDirectory() as tmp:
-        key = Path(tmp) / "key.pem"
-        key.touch(mode=0o600)
-        key.write_text(private_key)
-        out = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key)], input=data,
-                             capture_output=True, check=True, timeout=30)
-    return out.stdout
+    try:
+        _validate_private_key(private_key)
+        if not shutil.which("openssl"):
+            raise RuntimeError("openssl is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "key.pem"
+            key.touch(mode=0o600)
+            key.write_text(private_key)
+            out = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key)], input=data,
+                                 capture_output=True, check=True, timeout=30)
+        return out.stdout
+    except Exception:
+        raise RuntimeError("Search Console signing failed; check openssl and the service-account key") from None
 
 
 class SearchConsoleSource:
@@ -79,10 +100,16 @@ class SearchConsoleSource:
         credentials_file = credentials_file or os.environ.get("GSC_SERVICE_ACCOUNT_FILE", "")
         self._static_token = access_token or os.environ.get("GSC_ACCESS_TOKEN", "")
         self.creds: dict[str, Any] = {}
-        if not self._static_token:
+        if self._static_token:
+            self._static_token = credential(self._static_token, "GSC_ACCESS_TOKEN")
+        else:
             if not credentials_file:
                 raise RuntimeError("set GSC_SERVICE_ACCOUNT_FILE (or GSC_ACCESS_TOKEN)")
-            self.creds = json.loads(Path(credentials_file).expanduser().read_text())
+            try:
+                self.creds = json.loads(Path(credentials_file).expanduser().read_text())
+            except Exception:
+                raise RuntimeError("the Search Console service-account key could not be read") from None
+            _validate_credentials(self.creds)
             if self.creds.get("token_uri", TOKEN_URI) != TOKEN_URI:
                 raise RuntimeError("unexpected token_uri in the service-account key")
         self.site_url = site_url
@@ -102,9 +129,14 @@ class SearchConsoleSource:
         assertion = service_account_assertion(self.creds, now, self.signer)
         resp = self.http.request("POST", TOKEN_URI, form={
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion})
-        if not (resp or {}).get("access_token"):
-            raise RuntimeError("Google returned no access token")
-        self._token, self._expires = resp["access_token"], now + int(resp.get("expires_in", 3600))
+        try:
+            token = credential(resp.get("access_token"), "Google access token")
+            expires_in = int(resp.get("expires_in", 3600))
+            if expires_in <= 0:
+                raise ValueError("expired token")
+        except Exception:
+            raise RuntimeError("Google returned an invalid access token or expiry") from None
+        self._token, self._expires = token, now + expires_in
         return self._token
 
     def fetch(self, start: dt.date, end: dt.date) -> list[Row]:

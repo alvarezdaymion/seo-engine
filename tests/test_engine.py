@@ -236,6 +236,43 @@ def test_bad_report_checkpoint_does_not_lose_completed_publication(tmp_path, che
     assert path.read_text() == checkpoint
 
 
+@pytest.mark.parametrize("connector", ["github", "searchconsole", "shopify"])
+@pytest.mark.parametrize("failure", ["invalid", "transport", "response"])
+def test_connector_credentials_never_reach_errors_state_or_reports(tmp_path, monkeypatch, connector, failure):
+    write_answer(tmp_path / "answers")
+    secret = "synthetic-credential-marker"
+    token = secret + "\n" if failure == "invalid" else secret
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append(method)
+        if failure == "transport":
+            raise ValueError("invalid credential: " + str(headers))
+        return 401, json.dumps({"message": "invalid credential: " + token}).encode()
+
+    monkeypatch.setattr("seo_engine.http.urllib_transport", transport)
+    sections = {}
+    if connector == "github":
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+        sections["review"] = REVIEW
+    elif connector == "shopify":
+        monkeypatch.setenv("SHOPIFY_ADMIN_TOKEN", token)
+        monkeypatch.setenv("SHOPIFY_STORE", "synthetic-store.myshopify.com")
+        sections.update(publish={"target": "shopify"}, site={"page_path": "/pages/{slug}"})
+    else:
+        monkeypatch.setenv("GSC_ACCESS_TOKEN", token)
+        sections["search"] = {"source": "searchconsole", "site_url": "sc-domain:example.com"}
+    cfg = make_cfg(tmp_path, **sections)
+    deps = Deps(search=None if connector == "searchconsole" else ListSource())
+    result = Engine(cfg, deps, today=TODAY).run(report="force")
+    assert result["blockers"] and secret not in json.dumps(result)
+    for folder in (cfg.state_dir, cfg.reports_dir):
+        for path in folder.rglob("*"):
+            if path.is_file():
+                assert secret not in path.read_text(), path.name
+    assert len(calls) == (0 if failure == "invalid" else 1)
+
+
 def test_the_report_is_sent_once_a_week_when_delivery_is_on(tmp_path, monkeypatch):
     monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/services/test")
     sent = []

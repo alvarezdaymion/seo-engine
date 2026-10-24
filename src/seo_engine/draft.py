@@ -13,9 +13,11 @@ The claim check runs on the result either way.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
+from .http import credential
 from .text import claim_words, has_negation, tidy, words
 
 SYSTEM = (
@@ -79,10 +81,10 @@ def check_model_output(data: Any, transcript: list[str], max_sentences: int) -> 
         if not text or not isinstance(refs, list) or not refs:
             raise DraftRejected("each sentence needs text and the numbers it came from")
         if not all(type(n) is int and 1 <= n <= len(transcript) for n in refs):
-            raise DraftRejected("cites a sentence number that does not exist: %s" % refs)
+            raise DraftRejected("cites a sentence number that does not exist")
         problems = grounding_problems(text, [transcript[n - 1] for n in refs])
         if problems:
-            raise DraftRejected("%r %s" % (text[:60], "; ".join(problems)))
+            raise DraftRejected("; ".join(p.split(":", 1)[0] for p in problems))
         if refs[0] <= last_ref:
             raise DraftRejected("sentences must be selected in transcript order")
         last_ref = refs[0]
@@ -95,26 +97,43 @@ def model_draft(question: str, transcript: list[str], dcfg: dict[str, Any], clie
     if client is None:
         try:
             import anthropic
-        except ImportError as e:
-            raise DraftRejected("install the llm extra to use the model draft: uv sync --extra llm") from e
-        client = anthropic.Anthropic(max_retries=0)
+        except ImportError:
+            raise DraftRejected("install the llm extra to use the model draft: uv sync --extra llm") from None
+        try:
+            key = credential(os.environ.get("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY")
+            if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+                credential(os.environ["ANTHROPIC_AUTH_TOKEN"], "ANTHROPIC_AUTH_TOKEN")
+        except Exception:
+            raise DraftRejected("set ANTHROPIC_API_KEY to an ASCII token without whitespace") from None
+        try:
+            client = anthropic.Anthropic(api_key=key, max_retries=0)
+        except Exception:
+            raise DraftRejected("the model client could not be initialized") from None
     numbered = "\n".join("%d. %s" % (i, s) for i, s in enumerate(transcript, 1))
     kwargs: dict[str, Any] = {
         "model": dcfg["model"], "max_tokens": int(dcfg["max_tokens"]), "system": SYSTEM,
         "output_config": {"effort": dcfg["effort"], "format": {"type": "json_schema", "schema": SCHEMA}},
         "messages": [{"role": "user", "content": "Question: %s\n\nTranscript:\n%s" % (question, numbered)}],
     }
-    if dcfg.get("fallbacks"):
-        resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
-    else:
-        resp = client.messages.create(**kwargs)
-    if resp.stop_reason == "refusal":
+    try:
+        for name in ("api_key", "auth_token"):
+            value = getattr(client, name, None)
+            if value is not None:
+                credential(value, "model credential")
+        if dcfg.get("fallbacks"):
+            resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
+        else:
+            resp = client.messages.create(**kwargs)
+        refused = resp.stop_reason == "refusal"
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    except Exception:
+        raise DraftRejected("the model request failed") from None
+    if refused:
         raise DraftRejected("the model declined this request")
-    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
     try:
         data = json.loads(text)
-    except ValueError as e:
-        raise DraftRejected("the model did not return JSON") from e
+    except ValueError:
+        raise DraftRejected("the model did not return JSON") from None
     return Draft(check_model_output(data, transcript, max_sentences), "model")
 
 

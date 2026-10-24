@@ -25,7 +25,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from ..http import Http, Transport
+from ..http import Http, Transport, credential
 from ..page import Page, owned_by, render_body
 from . import Published
 
@@ -62,6 +62,7 @@ class ShopifyPublisher(ShopifyPreview):
         token = token or os.environ.get("SHOPIFY_ADMIN_TOKEN", "")
         if not store or not token:
             raise RuntimeError("set SHOPIFY_STORE and SHOPIFY_ADMIN_TOKEN")
+        token = credential(token, "SHOPIFY_ADMIN_TOKEN")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", store):
             raise RuntimeError("SHOPIFY_STORE must be the store's your-store.myshopify.com domain")
         if not re.fullmatch(r"\d{4}-\d{2}", api_version):

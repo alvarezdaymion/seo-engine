@@ -2,8 +2,10 @@ import json
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from seo_engine import config
-from seo_engine.draft import grounding_problems, make_draft, template_draft
+from seo_engine.draft import DraftRejected, grounding_problems, make_draft, model_draft, template_draft
 
 TRANSCRIPT = [
     "Good question.",
@@ -56,7 +58,8 @@ def test_grounded_model_draft_is_used_and_may_tidy():
 def test_a_model_draft_that_adds_a_word_is_rejected_for_the_template():
     client = FakeClient([{"text": "A dripping faucet always means the cartridge failed, guaranteed.", "from": [2]}])
     d = make_draft("Why is my faucet dripping?", TRANSCRIPT, MODEL, 2, client)
-    assert d.method == "template" and "adds words" in d.note and "guaranteed" in d.note
+    assert d.method == "template" and "adds words" in d.note
+    assert "guaranteed" not in d.note
     assert d.sentences == TRANSCRIPT[1:3]
 
 
@@ -88,6 +91,7 @@ def test_fallbacks_can_be_turned_off():
 
 
 def test_sdk_retries_are_disabled_for_metered_requests(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-model-key")
     options = []
     client = FakeClient([{"text": TRANSCRIPT[1], "from": [2]}])
 
@@ -97,7 +101,7 @@ def test_sdk_retries_are_disabled_for_metered_requests(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=factory))
     assert make_draft("question", TRANSCRIPT, MODEL, 2).method == "model"
-    assert options == [{"max_retries": 0}]
+    assert options == [{"api_key": "synthetic-model-key", "max_retries": 0}]
 
 
 def test_unexpected_model_errors_do_not_expose_credentials():
@@ -109,3 +113,41 @@ def test_unexpected_model_errors_do_not_expose_credentials():
     client.beta.messages.create = fail
     result = make_draft("question", TRANSCRIPT, MODEL, 2, client)
     assert result.method == "template" and "synthetic-secret-token" not in result.note
+
+
+def test_model_credentials_are_validated_before_client_creation(monkeypatch):
+    secret = "synthetic-credential-marker"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret + "\n")
+    calls = []
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=lambda **kw: calls.append(kw)))
+    with pytest.raises(DraftRejected) as caught:
+        model_draft("question", TRANSCRIPT, MODEL)
+    assert calls == [] and secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("during_creation", [False, True])
+def test_model_request_boundary_sanitizes_every_exception(monkeypatch, during_creation):
+    secret = "synthetic-credential-marker"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+
+    def fail(**kwargs):
+        raise DraftRejected(secret)
+
+    if during_creation:
+        monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=fail))
+        client = None
+    else:
+        client = FakeClient()
+        client.beta.messages.create = fail
+    with pytest.raises(DraftRejected) as caught:
+        model_draft("question", TRANSCRIPT, MODEL, client)
+    assert secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("item", [
+    {"text": "synthetic-credential-marker", "from": [2]},
+    {"text": TRANSCRIPT[1], "from": ["synthetic-credential-marker"]},
+])
+def test_rejected_model_output_cannot_enter_the_saved_draft_note(item):
+    result = make_draft("question", TRANSCRIPT, MODEL, 2, FakeClient([item]))
+    assert result.method == "template" and "synthetic-credential-marker" not in result.note

@@ -124,7 +124,7 @@ def webhook_url(url: str | None = None) -> str:
         parsed = urllib.parse.urlsplit(url)
         valid = (parsed.scheme == "https" and bool(parsed.hostname) and parsed.port != 0
                  and not parsed.username and not parsed.password and not parsed.fragment
-                 and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url))
+                 and not any(not 33 <= ord(c) <= 126 for c in url))
     except ValueError:
         valid = False
     if not valid:
@@ -138,6 +138,8 @@ def send_webhook(text: str, payload_key: str = "text", url: str | None = None,
     try:
         Http(transport=transport).request("POST", url, json_body={payload_key: text})
     except HttpError as e:  # the webhook URL is a secret, so it never goes into the message
-        raise RuntimeError("the report webhook returned HTTP %d" % e.status) from None
+        if e.status:
+            raise RuntimeError("the report webhook returned HTTP %d" % e.status) from None
+        raise RuntimeError("the report webhook request failed") from None
     except Exception as e:
         raise RuntimeError("the report webhook request failed (%s)" % type(e).__name__) from None

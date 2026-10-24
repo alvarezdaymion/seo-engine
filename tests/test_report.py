@@ -90,6 +90,7 @@ def test_webhook_request_errors_never_expose_the_url(tmp_path, monkeypatch, erro
 @pytest.mark.parametrize("url", [
     "https://hooks.example.com/synthetic-secret bad", "https://hooks.example.com/synthetic-secret\n",
     "https://", "https://[invalid/synthetic-secret", "https://hooks.example.com:bad/synthetic-secret",
+    "https://hooks.example.com/synthetic-secreté",
 ])
 def test_malformed_webhook_urls_are_refused_without_transport_calls(url):
     calls = []
@@ -101,3 +102,13 @@ def test_malformed_webhook_urls_are_refused_without_transport_calls(url):
     with pytest.raises(RuntimeError) as caught:
         send_webhook("report", url=url, transport=transport)
     assert calls == [] and "synthetic-secret" not in str(caught.value)
+
+
+def test_invalid_webhook_encoding_does_not_consume_delivery_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/synthetic-secreté")
+    cfg = make_cfg(tmp_path, report={"send": "webhook"})
+    calls = []
+    deps = Deps(search=ListSource(), webhook=lambda *args: calls.append(args))
+    result = Engine(cfg, deps, today=TODAY).run(execute=False, report="force")
+    assert result["blockers"] and "synthetic-secret" not in str(result)
+    assert calls == [] and not (cfg.state_dir / "report-deliveries.json").exists()

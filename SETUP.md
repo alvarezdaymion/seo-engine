@@ -33,6 +33,8 @@ The token request is signed with the `openssl` command, which macOS and most Lin
 
 The CLI reads `.env` from the folder that holds `seo-engine.toml`; a variable already set in the environment wins.
 
+Token values (`GSC_ACCESS_TOKEN`, `GITHUB_TOKEN`, `SHOPIFY_ADMIN_TOKEN` and `ANTHROPIC_API_KEY`) must be nonempty ASCII with no whitespace or control characters. Copy the token itself without a trailing newline; malformed values are rejected without displaying them. The private key inside a service-account JSON file keeps its PEM line breaks. HTTP, signing and model client failures never include credential values or raw exception messages; HTTP failures report the status code when available and omit provider error text.
+
 Done when `uv run seo-engine check` shows `env set` for Search, and `uv run seo-engine run` prints `Search data:` with a row count. A new site may have few rows; that is normal.
 
 ## 4. Write the rule pack with the owner
@@ -102,7 +104,7 @@ Done when `state/last-run.json` updates each day.
 
 ## 10. Optional: deliver the weekly report
 
-Set `[report] send = "webhook"` and put a valid https incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Test with `uv run seo-engine report --send`. Collection and delivery share the run lock; a lock or initialization failure prevents sending and does not consume the week's delivery. The command exits 1 on blockers. The report goes out on `[report] weekday`, at most once for each reporting week. If a response is lost, delivery stays held for reconciliation, including for another `report --send`. Malformed URLs are rejected before recording delivery intent, and request errors never include the URL or raw exception message.
+Set `[report] send = "webhook"` and put a valid ASCII https incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Percent-encode any non-ASCII URL components. Test with `uv run seo-engine report --send`. Collection and delivery share the run lock; a lock or initialization failure prevents sending and does not consume the week's delivery. The command exits 1 on blockers. The report goes out on `[report] weekday`, at most once for each reporting week. If a response is lost, delivery stays held for reconciliation, including for another `report --send`. Malformed URLs are rejected before recording delivery intent, and request errors never include the URL or raw exception message.
 
 ## 11. Optional: the model draft
 

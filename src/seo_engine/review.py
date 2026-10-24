@@ -32,7 +32,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .gates import Gate
-from .http import Http, HttpError, Transport
+from .http import Http, HttpError, Transport, credential
 from .state import WriteJournal
 from .text import sha256
 
@@ -46,6 +46,7 @@ class GitHubReview:
         token = token or os.environ.get("GITHUB_TOKEN", "")
         if not token:
             raise RuntimeError("set GITHUB_TOKEN")
+        token = credential(token, "GITHUB_TOKEN")
         self.repo, self.base, self.prefix = repo, base, branch_prefix
         self.path = path.strip("/")
         self.merge_method = merge_method
