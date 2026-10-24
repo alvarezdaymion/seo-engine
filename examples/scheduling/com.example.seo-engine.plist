@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd: one run a day at 07:00.
+  1. Replace /path/to/seo-engine and /path/to/uv (run `which uv`).
+  2. cp examples/scheduling/com.example.seo-engine.plist ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/com.example.seo-engine.plist
+  seo-engine reads .env next to seo-engine.toml, so keep credentials there (never committed).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.seo-engine</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>cd /path/to/seo-engine &amp;&amp; /path/to/uv run seo-engine run --quiet</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/seo-engine.log</string>
+  <key>StandardErrorPath</key><string>/tmp/seo-engine.log</string>
+</dict>
+</plist>

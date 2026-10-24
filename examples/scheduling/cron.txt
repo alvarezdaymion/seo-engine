@@ -1,0 +1,3 @@
+# crontab -e, then add (edit the paths). One run a day at 07:00.
+# cron has a minimal PATH: give uv's full path (`which uv`). seo-engine reads .env next to seo-engine.toml.
+0 7 * * * cd /path/to/seo-engine && /path/to/uv run seo-engine run --quiet >> seo-engine.log 2>&1

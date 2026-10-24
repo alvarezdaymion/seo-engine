@@ -1,0 +1,17 @@
+{
+  "id": "example-answer",
+  "question": "Write the customer's question the way they would type it into a search box?",
+  "speaker": {
+    "name": "",
+    "role": ""
+  },
+  "video_url": "",
+  "thumbnail_url": "",
+  "recorded_on": "",
+  "target_queries": [],
+  "cut": [],
+  "sources": [],
+  "approval": {
+    "status": "recorded"
+  }
+}
