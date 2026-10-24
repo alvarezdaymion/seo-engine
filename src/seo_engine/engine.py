@@ -169,11 +169,11 @@ class Engine:
                 self.blocker("%s %s failed: %s: %s" % (self.plan.action.kind, self.plan.action.slug,
                                                          type(e).__name__, str(e)[:300]))
                 self.r["status"] = "error"
-        if report == "force" or (report == "auto" and self.report_due()):
-            try:
+        try:
+            if report == "force" or (report == "auto" and self.report_due()):
                 self.write_report(mark=report == "auto", send=send_report)
-            except Exception as e:
-                self.blocker("weekly report failed: %s" % str(e)[:300])
+        except Exception as e:
+            self.blocker("weekly report failed: %s" % str(e)[:300])
         self.state.save()
         write_json(self.cfg.state_dir / "last-run.json", self.r)
         return self.r
@@ -446,7 +446,10 @@ class Engine:
 
         def require_restore(undo: dict[str, Any]) -> None:
             previous = self.state.page(page.slug)
-            if (previous is None or undo.get("body_html") != render_body(previous)
+            if publisher.target == "static":
+                if previous is None or publisher.files(previous).get(undo.get("relative")) != undo.get("previous"):
+                    raise RuntimeError("previous approved build cannot be verified; kept unpublished")
+            elif (previous is None or undo.get("body_html") != render_body(previous)
                     or undo.get("title") != previous.question
                     or {k: value[1] for k, value in undo.get("seo", {}).items()}
                     != {"title_tag": previous.question, "description_tag": previous.description}):
@@ -481,6 +484,8 @@ class Engine:
             res = CheckResult(False, self.fetch_url(page), problems=["live check failed (%s)" % type(e).__name__])
         act["live"] = res.to_json()
         last_check = {"ok": res.ok, "problems": res.problems, "on": self.today.isoformat()}
+        if publisher.target == "static":
+            publisher.verify(pub)
         if res.ok:
             first, today = not rec.get("live"), self.today.isoformat()
             rec.update(status="published", live=True, reason="", last_check=last_check, updated_on=today,
@@ -488,7 +493,7 @@ class Engine:
             rec["publication"]["status"] = "done"
             if publisher.target == "static":
                 rec["ownership"] = {"root": str(publisher.root), "recording_id": page.recording_id,
-                                    "files": {rel: str(publisher._dest(rel)) for rel in files}}
+                                    "files": {pub.binding["relative"]: pub.binding["path"]}}
             if rec.get("pending_kind") == "snippet":
                 rec["snippet_on"] = today
             rec.pop("pending_kind", None)
@@ -505,6 +510,8 @@ class Engine:
             self.blocker("%s is merged but not live yet: %s" % (page.canonical, problems))
             return
         undo = publisher.rollback(pub) if rollback else "left as published (the page was already failing)"
+        if pub.undo.get("unpublished"):
+            rec["live"] = False
         rec["publication"]["status"] = "done"
         act["rollback"] = undo
         rec.update(status="rolled_back" if rollback else rec.get("status", "published"),
@@ -536,7 +543,10 @@ class Engine:
 
     def report_due(self) -> bool:
         week = complete_weeks(self.today)[0][0].isoformat()
-        last = read_json(self.cfg.state_dir / "report.json") or {}
+        last = read_json(self.cfg.state_dir / "report.json")
+        if last is not None and not isinstance(last, dict):
+            raise RuntimeError("report checkpoint must be an object")
+        last = last or {}
         return self.today.weekday() >= WEEKDAYS.index(self.cfg["report"]["weekday"]) and last.get("week") != week
 
     def write_report(self, mark: bool = True, send: bool | None = None) -> dict[str, Any]:

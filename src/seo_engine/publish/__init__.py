@@ -20,6 +20,7 @@ class Published:
     action: str  # created, updated, unchanged, deployed by merge
     where: str = ""
     undo: dict[str, Any] = field(default_factory=dict)
+    binding: dict[str, Any] = field(default_factory=dict)
 
 
 def build_publisher(cfg: Any, transport: Any = None) -> Any:

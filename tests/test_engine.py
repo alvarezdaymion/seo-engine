@@ -221,6 +221,21 @@ def test_the_report_waits_for_complete_final_data(tmp_path):
     assert r["report"]["complete"] is False
 
 
+@pytest.mark.parametrize("checkpoint", ["{", "[]", "null"])
+def test_bad_report_checkpoint_does_not_lose_completed_publication(tmp_path, checkpoint):
+    write_answer(tmp_path / "answers")
+    state = tmp_path / "state"
+    state.mkdir()
+    path = state / "report.json"
+    path.write_text(checkpoint)
+    result, _ = run(tmp_path, mode="auto")
+    assert result["status"] == "published" and result["blockers"]
+    record = json.loads((state / "pages.json").read_text())[SLUG]
+    assert record["live"] and record["publication"]["status"] == "done"
+    assert json.loads((state / "last-run.json").read_text())["blockers"]
+    assert path.read_text() == checkpoint
+
+
 def test_the_report_is_sent_once_a_week_when_delivery_is_on(tmp_path, monkeypatch):
     monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/services/test")
     sent = []
