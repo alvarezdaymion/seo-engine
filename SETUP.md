@@ -89,7 +89,7 @@ Only when the owner explicitly asks:
 2. Set `[publish] mode = "live"`. For `git`, raise `[livecheck] attempts` and `wait_seconds` (for example 10 and 30) so the live check covers the deploy.
 3. Optionally, after the owner has reviewed several pull requests, set `auto_merge = true` so the engine merges when every gate passes.
 
-Done when a run prints `Result: published` and `Live check ...: passed`.
+Done when a run prints `Result: published` and `Live check ...: passed`. On Shopify, the first live publish also proves the theme keeps the page body as sent: if the live check fails on the schema or the source marker, the engine hides the page again and the run says which check failed.
 
 ## 9. Schedule one run a day
 

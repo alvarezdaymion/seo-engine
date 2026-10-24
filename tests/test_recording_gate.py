@@ -180,3 +180,18 @@ def test_two_recordings_with_the_same_question_never_share_a_page(tmp_path):
                                                      "url": SITE + "/answers/why-is-my-kitchen-faucet-dripping/"}}
     p = plan_for([], [first, second], records)
     assert p.action.answer is second and p.action.slug == "why-is-my-kitchen-faucet-dripping-ra-200"
+
+
+@pytest.mark.parametrize("meta", [
+    {"sources": [{"url": "javascript:alert(1)", "title": "x", "supports": "faucet"}]},
+    {"thumbnail_url": "data:image/png;base64,AAAA"},
+    {"speaker": "Sam Placeholder"},
+])
+def test_answer_files_with_unsafe_links_or_bad_fields_are_skipped(tmp_path, meta):
+    from seo_engine.answers import load_answers
+    write_answer(tmp_path, "ra-100")
+    data = json.loads((tmp_path / "ra-100.json").read_text())
+    data.update(meta)
+    (tmp_path / "ra-100.json").write_text(json.dumps(data))
+    answers, errors = load_answers(tmp_path)
+    assert answers == [] and len(errors) == 1 and "ra-100.json" in errors[0]

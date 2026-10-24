@@ -13,6 +13,12 @@ CREDS = {"client_email": "reader@example.com", "private_key": "not-a-real-key",
 ACCESS = "ya29-test-token-not-real"
 
 
+@pytest.fixture(autouse=True)
+def no_google_env(monkeypatch):
+    monkeypatch.delenv("GSC_SERVICE_ACCOUNT_FILE", raising=False)
+    monkeypatch.delenv("GSC_ACCESS_TOKEN", raising=False)
+
+
 def decode(part):
     return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
 

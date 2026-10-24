@@ -266,6 +266,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         ok, state = _env("SHOPIFY_STORE", "SHOPIFY_ADMIN_TOKEN")
         if not ok:
             problems.append("publish")
+    elif p["target"] == "git":
+        state = "%s files committed to %s through review" % (cfg["static"]["format"], rc["repo"] or "the review repo")
     else:
         state = "%s files in %s" % (cfg["static"]["format"], rel(cfg.path(cfg["static"]["dir"])))
     print("Publish: %s, %s, at most %s a day: %s"

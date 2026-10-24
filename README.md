@@ -72,7 +72,7 @@ Weekly report: seo-engine-demo/reports/2026-03-02.md
 1. **Search data.** Daily query and page rows of final Search Console data. The last 28 days are compared with the 28 before. Brand queries (`brand_terms`) are left out.
 2. **Live gate.** Every page the engine published is fetched and checked. A failing page is the first thing to repair.
 3. **Plan** (`planner.py`), first match wins:
-   1. finish a pull request from an earlier run: merge it when every gate passes, publish it once merged;
+   1. finish a pull request from an earlier run: merge it when every gate passes, publish it once merged (one pull request is open at a time);
    2. repair a live page that failed its check by republishing the approved build;
    3. build a page from an approved recording: first the ones that cover the highest-ranked "no page" queries, then approved recordings that have no page yet;
    4. give a low-CTR page the engine built a new meta description, taken from the transcript sentence that best matches its top query (at most once per page every 28 days);

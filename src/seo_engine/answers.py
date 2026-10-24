@@ -95,6 +95,11 @@ def load_answer(path: Path) -> RecordedAnswer:
     raw = transcript_path.read_bytes() if transcript_path.exists() else b""
     transcript = raw.decode("utf-8", "replace").replace("\r\n", "\n")
     speaker = meta.get("speaker") or {}
+    if not isinstance(speaker, dict):
+        raise ValueError("%s: speaker must be an object with name and role" % path.name)
+    links = [str(s.get("url", "")) for s in meta.get("sources", [])] + [str(meta.get("thumbnail_url") or "https://")]
+    if not all(u.startswith(("https://", "http://")) for u in links):
+        raise ValueError("%s: source and thumbnail URLs must start with https:// or http://" % path.name)
     return RecordedAnswer(
         id=answer_id, question=str(meta.get("question", "")).strip(),
         speaker_name=str(speaker.get("name", "")), speaker_role=str(speaker.get("role", "")),
@@ -116,7 +121,7 @@ def load_answers(directory: Path) -> tuple[list[RecordedAnswer], list[str]]:
             if not answer.question:
                 raise ValueError("%s: question is empty" % path.name)
             answers.append(answer)
-        except (OSError, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             errors.append(str(e)[:200])
     return answers, errors
 
