@@ -1,0 +1,11 @@
+# Linux systemd (user unit). Copy seo-engine.service and seo-engine.timer to ~/.config/systemd/user/,
+# edit the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now seo-engine.timer
+# seo-engine reads .env next to seo-engine.toml in the working directory.
+[Unit]
+Description=seo-engine daily run
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/seo-engine
+ExecStart=/path/to/uv run seo-engine run --quiet

@@ -1,0 +1,37 @@
+# AGENTS.md
+
+seo-engine reads Search Console, ranks opportunities by missed clicks, builds pages only from approved recorded answers, checks every claim and the live page, and ships changes through gated pull requests.
+
+If you were asked to set seo-engine up for someone, follow [SETUP.md](SETUP.md). The rules below are for changing the code.
+
+## Layout
+
+- `src/seo_engine/config.py`: config schema, defaults and validation; `templates/seo-engine.example.toml` mirrors it.
+- `search.py`, `searchconsole.py`: daily rows, windows, the CSV source and the Search Console client.
+- `opportunities.py`: the ranking. Pure functions over rows.
+- `answers.py`: recorded answers and `approval_problems`, the approval gate.
+- `planner.py`: the action ladder and the refusals.
+- `page.py`, `draft.py`, `claims.py`: building, drafting, claim checks and fixes.
+- `gates.py`, `review.py`: release gates and the GitHub flow. `publish/`: static and Shopify publishers.
+- `livecheck.py`: the live-page check. `report.py`: the weekly report and webhook.
+- `engine.py`: one run. `state.py`: files under `state/`. `cli.py`: commands. `demo.py`: synthetic data and `MemoryGitHub`.
+
+## Rules
+
+- **No page without an approved recording.** `planner.plan`, `page.build_page` and `gates.recording_gate` each enforce it, and `Engine.publish` runs the gates again right before anything goes out. Do not add a code path that creates or rewrites page content from anything else: a keyword list, a model prompt, a template without a transcript. Keep `tests/test_recording_gate.py` passing and extend it when you add a path that creates pages.
+- **No quota.** Do not add settings or logic that make the engine produce pages on a schedule. `max_new_pages_per_day` is a ceiling only, and an idle run is a normal result.
+- **Only the speaker's words.** Page text comes from the approved transcript minus the `cut` lines. The model draft may only select and tidy transcript sentences and must pass `draft.grounding_problems`; `build_page` checks the answer section against the transcript again. Claim fixes remove sentences, attach approved sources or add disclosures. Nothing rewords a speaker.
+- **Gates run right before the action they guard**, every time: the recording and claims gates before every merge and publish, the GitHub gates with the exact head SHA that gets merged.
+- **Writes are allow-listed.** `GitHubReview._write` and `ShopifyPublisher._write` refuse anything outside their list before it is sent. Do not add deletes, force pushes, writes to the base branch, or writes to other Shopify resources.
+- **Off by default.** Review, auto-merge, live publishing, report delivery and the model stay off unless the config turns them on. A merge also needs `[publish] mode = "live"`.
+- **The engine only edits pages it built.** Opportunities on other pages are reported, never acted on.
+- **Unknown is not zero.** Missing search data is reported as unavailable, and a week without complete final data is never reported as complete.
+- **One action per run.** A failing step becomes a blocker and never stops the rest of the run.
+- **Secrets** come from environment variables. Never commit `.env`, `seo-engine.toml`, `rules.toml`, `answers/`, `state/`, `site/` or `reports/`, and never put tokens or webhook URLs in errors, state files or reports (`http.py` errors omit headers and query strings).
+- Runtime code is standard library only; the Anthropic SDK is an optional extra.
+
+## Development
+
+- Python 3.11+, `uv`. Run `uv run pytest` and `uv run ruff check` before a PR.
+- Add a failing test with each behavior change. Network code is tested with fake transports (`demo.MemoryGitHub` and the fakes in `tests/`); tests never call real APIs.
+- Test data is synthetic: example.com and example.org addresses, obviously fake names, no real queries or metrics.

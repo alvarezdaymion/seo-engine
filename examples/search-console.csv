@@ -1,0 +1,6 @@
+date,query,page,clicks,impressions,position
+2026-03-01,water heater popping noise,https://www.example.com/services/water-heaters/,0,41,17.2
+2026-03-01,furnace filter replacement,https://www.example.com/blog/furnace-filter-guide/,1,86,4.1
+2026-03-02,water heater popping noise,https://www.example.com/services/water-heaters/,1,44,17.0
+2026-03-02,furnace filter replacement,https://www.example.com/blog/furnace-filter-guide/,0,91,4.2
+2026-03-02,example home services,https://www.example.com/,7,22,1.2

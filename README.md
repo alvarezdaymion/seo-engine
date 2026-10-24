@@ -1,1 +1,217 @@
 # seo-engine
+
+seo-engine does the daily search work a small online business never has time for. It reads Google Search Console, ranks what to do next by the clicks each opportunity is missing, and builds a page only from an approved recorded answer: a customer question that someone on your team answered on video, published with the transcript, the video and the speaker's name. Every claim on the page is checked against your rule pack. With review on, each change is a GitHub pull request that merges only when every gate passes. The live page is checked after publishing, and a weekly report says what moved and which questions to record next.
+
+Project page: [daymionalvarez.com/portfolio/seo-engine](https://daymionalvarez.com/portfolio/seo-engine)
+
+## Why recordings, not a quota
+
+The first version of this system worked as software and failed as marketing. It had a daily article quota, so a model wrote an article a day, and almost nobody clicked them: no real person on the page, topics picked to fill the slot, answers shaped to pass a review instead of answering the question. The fix is a rule in code, not a prompt: **a page can only exist if it is built from an approved recorded answer.** It is enforced in three places:
+
+1. **The planner** refuses a search query that no approved recording covers. The query goes into the weekly report as a question to record.
+2. **The page builder** raises `NoApprovedRecording` without one, and refuses answer text that uses words the transcript does not contain.
+3. **The release gates** check the approval again right before every merge and publish, against the SHA-256 of the transcript, so an edited transcript or a withdrawn approval stops the release.
+
+There is no setting that makes the engine produce pages. `max_new_pages_per_day` is a ceiling, and an idle run is normal. `tests/test_recording_gate.py` pins all of this.
+
+## Quickstart
+
+Needs Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+git clone https://github.com/alvarezdaymion/seo-engine.git
+cd seo-engine
+uv run seo-engine demo            # synthetic data, an in-memory GitHub, no keys, no network
+uv run seo-engine demo --serve    # the same, then serves the demo site on http://127.0.0.1:8766
+```
+
+To use it on your site, run `uv run seo-engine init`, edit `seo-engine.toml` and `rules.toml`, add recorded answers to `answers/`, put credentials in `.env` (start from `.env.example`; the CLI reads `.env` next to `seo-engine.toml`, and variables already set in the environment win), then `uv run seo-engine check` and `uv run seo-engine run`. Or hand the repo to your coding agent and say "set up seo-engine for my site": [SETUP.md](SETUP.md) is written for it.
+
+## What you see
+
+The demo is a fictional home-services company with 56 days of synthetic Search Console rows and two recorded answers, one approved and one not. Abridged:
+
+```
+Plan, in rank order (clicks missed per 28 days, estimated):
+   1. low CTR   /blog/furnace-filter-guide/              2,410 impr  pos  4.1  ~169  skip: not built by seo-engine, so reported and never edited
+   2. no page   "water heater popping noise"             1,150 impr  pos 17.2  ~65   BUILD: from recording ra-001 (Alex Example)
+   3. no page   "how to relight a pilot light"             980 impr  pos 24.5  ~57   refused: no recorded answer covers it
+   4. slipping  /services/drain-cleaning/                1,300 impr  pos  9.8  ~47   skip: not built by seo-engine, so reported and never edited
+   5. no page   "tankless water heater installation cost"  820 impr  pos 22.1  ~46   refused: recording ra-002 is not approved: status is "recorded"
+   6. no page   "water heater making popping sound"        310 impr  pos 19.4  ~18   covered: same recording as a line above (ra-001)
+
+Build: why-is-my-water-heater-making-a-popping-noise from recording ra-001, answered by Alex Example (approved 2026-03-02)
+  Draft: template, 3 answer sentences. Left out 1 sentence cut from the approved edit.
+  Claim check (Example rule pack): 1 finding
+    needs_source: "A thick layer of sediment can make the burner run about 10 percent longer to heat the same water."
+  Fix: cited approved source [1] https://www.example.org/water-heater-maintenance for "A thick layer of sediment can make the burner run about..."
+  Claim check again: passed
+Review: pull request #1 memory://example/site/pull/1, branch seo-engine/why-is-my-water-heater-making-a-popping-noise-ab5a837
+  Merge gates: recording ok, claims ok, open ok, head ok, files ok, checks ok, mergeable ok, auto-merge ok, publish mode ok
+  Merged.
+Publish: created seo-engine-demo/site/answers/why-is-my-water-heater-making-a-popping-noise/index.html
+Live check http://127.0.0.1:<port>/answers/why-is-my-water-heater-making-a-popping-noise/: passed (200, no redirect, indexable,
+  title, canonical, description, schema, video embed, speaker, source hash)
+
+Weekly report: seo-engine-demo/reports/2026-03-02.md
+  Week of 2026-03-02 to 2026-03-08: 18 non-brand clicks (week before: 19), 2,007 impressions (week before: 1,873).
+  Questions to record: 2. Recordings waiting for approval: 1.
+```
+
+1. **Opportunities**, ranked by estimated clicks missed: a query with no page that ranks for it, a page with low CTR for its position, a page that slipped against the previous period.
+2. **The plan.** One action per run. The top line is a page the engine did not build, so it is reported and left alone. Two queries are refused: one has no recording, one has a recording nobody approved. The approved recording gets built.
+3. **The page**: the recorded question as the H1, the speaker's name and role, a short direct answer, the video, the full transcript without the line the approved edit cut (a "guaranteed to last twenty years" promise), cited sources and the disclosure from the rule pack.
+4. **The claim check** finds a percentage with no source, cites the source that was approved with the recording, and checks again.
+5. **Review, merge, publish, live check**: a pull request on the in-memory GitHub, merged after every gate passes, written to the site folder, then fetched from a local server and checked.
+6. **The weekly report** in `seo-engine-demo/reports/`, including the questions to record.
+
+## How it runs
+
+`seo-engine run` is one run. Schedule it once a day (cron, systemd and launchd examples are in [examples/scheduling](examples/scheduling)).
+
+1. **Search data.** Daily query and page rows of final Search Console data. The last 28 days are compared with the 28 before. Brand queries (`brand_terms`) are left out.
+2. **Live gate.** Every page the engine published is fetched and checked. A failing page is the first thing to repair.
+3. **Plan** (`planner.py`), first match wins:
+   1. finish a pull request from an earlier run: merge it when every gate passes, publish it once merged;
+   2. repair a live page that failed its check by republishing the approved build;
+   3. build a page from an approved recording: first the ones that cover the highest-ranked "no page" queries, then approved recordings that have no page yet;
+   4. give a low-CTR page the engine built a new meta description, taken from the transcript sentence that best matches its top query (at most once per page every 28 days);
+   5. nothing. An idle run is normal.
+4. **Build and check.** The page is built from the recording, the claim check runs, safe fixes are applied and the check runs again. A page with findings is held and listed in the report.
+5. **Review, merge and publish**, each behind its own switch (below). After a publish the page is fetched and checked again, with retries for a CDN or deploy, and rolled back if it still fails.
+6. **Report.** On the report weekday (Thursday by default, when last week's final data is usually in), the weekly report is written to `reports/` and sent if delivery is on.
+
+A failing step is recorded as a blocker and never stops the steps after it. `seo-engine run` exits 1 when the run has a blocker, so a scheduler can alert on it.
+
+## Recorded answers
+
+Each recording is two files in `answers/`: `<id>.json` and the transcript `<id>.txt`.
+
+```json
+{
+  "id": "ra-001",
+  "question": "Why is my water heater making a popping noise?",
+  "speaker": {"name": "Alex Example", "role": "Lead technician"},
+  "video_url": "https://videos.example.com/answers/ra-001.mp4",
+  "thumbnail_url": "https://videos.example.com/answers/ra-001.jpg",
+  "recorded_on": "2026-02-24",
+  "target_queries": ["water heater popping noise"],
+  "cut": ["Honestly, if you flush it every year, that tank is guaranteed to last twenty years."],
+  "sources": [{"supports": "10 percent longer", "title": "Water heater maintenance basics (example source)",
+               "url": "https://www.example.org/water-heater-maintenance"}],
+  "approval": {"status": "approved", "by": "owner", "on": "2026-03-02", "transcript_sha256": "82e5f0bf..."}
+}
+```
+
+- `cut` lists what the approved video edit removed. Those sentences never reach the page, even though the raw transcript still has them.
+- `sources` are links a person approved along with the recording. `supports` is the wording in the transcript each one backs.
+- `seo-engine approve <id> --by <name>` writes the approval and binds it to the transcript's SHA-256. Editing the transcript afterwards withdraws it.
+- YouTube and Vimeo links become an iframe embed; any other https URL becomes a `<video>` element.
+- A query matches a recording when it is one of the `target_queries`, or when its topic words overlap the question's enough (`match_threshold`, a Dice score, 0.6 by default).
+
+The direct answer at the top of the page is the first three transcript sentences that have five words or more. With `[draft] mode = "model"`, a model picks the sentences instead. It may join sentences and drop filler, and every output sentence is checked against the sentences it cites: any word outside a small set of grammar words (a, the, and, it, is, of...) that is not in those sentences, or a dropped negation, rejects the whole draft and the template is used. The claim check runs either way.
+
+## The claim check
+
+A rule pack is a TOML file; `seo-engine init` copies [the example](src/seo_engine/templates/rules.example.toml).
+
+| Rule | Example | Fix |
+|---|---|---|
+| `[[banned]]` phrases | "guaranteed", "best in town", "#1" | Remove the sentence. A speaker is never reworded. |
+| `[[needs_source]]` phrases or regex | a percentage, "studies show", "required by law" | Cite a source approved with the recording whose `supports` words are in the sentence, or remove the sentence |
+| `[[disclosures]]` | "This answer is general information..." | Add it |
+
+Phrases match whole words and ignore case. A banned phrase in the question itself cannot be fixed, so that page is held.
+
+## Switches and gates
+
+| Switch | Default | When on |
+|---|---|---|
+| `[review] enabled` | `false` | Every change is a branch and pull request on GitHub |
+| `[review] auto_merge` | `false` | The engine merges its own pull request when every gate passes |
+| `[publish] mode` | `"dry-run"` | `"live"` lets the engine merge and publish |
+| `[report] send` | `"off"` | `"webhook"` posts the weekly report |
+| `[draft] mode` | `"template"` | `"model"` calls the model to pick the answer sentences |
+
+In dry-run the engine still builds and checks the page and writes it to `state/drafts/<slug>.html`, so you can read exactly what it would publish.
+
+**Before a merge**, every one of these must pass: `recording` (approved, same transcript the page was built from), `claims` (no findings), `open`, `head` (nobody pushed to the branch since the engine did), `files` (the pull request changes exactly the page files), `checks` (every name in `required_checks` succeeded), `mergeable` (GitHub reports `clean`), `auto-merge` and `publish mode`. The merge sends the head SHA the gates saw. When a person merges instead, the engine publishes only if the merged files are exactly the build it approved. The `recording` and `claims` gates run once more right before any publish, with or without review.
+
+**After a publish**, the live check fetches the page and requires: HTTP 200 with no redirect, no `noindex` (header or meta tag), the question in the title, exactly one canonical link pointing at the page, the expected meta description, JSON-LD with an `Article` by the speaker and a `VideoObject` for the video, the video embed, the speaker's name, and article text that still hashes to its `data-seo-engine-source` marker. A failure rolls back what the publisher changed.
+
+## Connectors
+
+| Connector | Status | What it does |
+|---|---|---|
+| Google Search Console | Real, read-only | Search Analytics API: daily query and page rows of final data, paginated. Service account (signed with the `openssl` command) or an access token |
+| CSV | Real | The same rows from a file: `date,query,page,clicks,impressions,position` ([example](examples/search-console.csv)) |
+| GitHub | Real | REST API: tree, commit, branch and pull request, then the gates and a merge (squash by default) with the gated head SHA |
+| Static files | Real | HTML pages, or Markdown with front matter, written into a folder. Rollback restores the previous file |
+| Shopify Pages | Real, Admin REST API | Creates or updates a page and its SEO title and description. New pages are created hidden, then shown. Never deletes; rollback hides or restores |
+| Git deploy | Real | `[publish] target = "git"`: the reviewed repo is the site, so the merge publishes and the engine waits for the live check |
+| Webhook | Real | Posts the weekly report as JSON to an https URL (Slack-style `text`, or `content`) |
+| Anthropic | Optional | Picks the answer sentences when `[draft] mode = "model"` (`uv sync --extra llm`) |
+| Demo | Synthetic | Search rows, recordings and an in-memory GitHub for `seo-engine demo` |
+
+Tests use fake transports for Search Console, GitHub, Shopify, the webhook and the model; no test calls a real API.
+
+What it does not do: generate images (pages use the video thumbnail), set up redirects or merge overlapping pages, check Google's index status (no URL Inspection API), publish Shopify blog articles (pages only), or send email. It never edits a page it did not build. Search Console leaves out anonymized and low-volume queries, so report totals cover the rows it returns.
+
+## Safety rules
+
+- **No page without an approved recording**, checked by the planner, the builder and the release gates.
+- **Nothing public by default.** Review, auto-merge, live publishing, report delivery and the model are all off until you turn them on.
+- **Writes are allow-listed per connector** and refused before they are sent: GitHub can only create a tree, a commit, a branch under `branch_prefix`, a pull request into `base`, and a merge with an exact head SHA; Shopify can only create a page, update a page and update one metafield value. Neither can delete or force anything.
+- **A speaker is never reworded.** Fixes remove sentences or attach approved sources.
+- **Unknown is not zero.** A week without complete final data is reported as not available yet, never as a partial week.
+- **Secrets come from environment variables.** Errors never include tokens, and webhook errors never include the URL.
+
+## Configuration
+
+Everything lives in `seo-engine.toml` (start from `uv run seo-engine init`; defaults are in `src/seo_engine/config.py`):
+
+- `[site]`: name, public origin, page path (`/pages/{slug}` on Shopify) and brand terms.
+- `[search]`: Search Console property or CSV file, window length, optional country.
+- `[opportunities]`: thresholds and the CTR-by-position curve used to estimate missed clicks.
+- `[answers]`, `[draft]`, `[claims]`: recordings folder, match threshold, draft mode, rule pack path.
+- `[review]`, `[publish]`, `[static]`, `[shopify]`: the switches above and where pages go.
+- `[livecheck]`: where to fetch pages for the check (the public URL, a preview server, or the written file) and retries.
+- `[report]`: weekday, delivery and payload key.
+
+## Repo layout
+
+```
+src/seo_engine/
+  cli.py            commands: demo, init, check, approve, run, report
+  engine.py         one run: search data, live gate, plan, action, report
+  planner.py        the action ladder and the refusals
+  opportunities.py  ranking by missed clicks
+  answers.py        recorded answers and the approval gate
+  page.py           page builder, HTML/Markdown rendering, source marker
+  draft.py          template and model drafts with the grounding check
+  claims.py         rule pack, claim check and safe fixes
+  gates.py          the recording and claims gates
+  review.py         GitHub pull requests, the GitHub gates and the merge
+  livecheck.py      the live-page check
+  report.py         weekly report and webhook
+  searchconsole.py  Search Console client; search.py: rows, windows, CSV
+  publish/          static and Shopify publishers
+  state.py          state/ files and the ledger
+  demo.py           synthetic data and the in-memory GitHub
+  templates/        example config, rule pack, answer, and the demo recordings
+tests/              pytest, fake transports only
+examples/           scheduling (cron, systemd, launchd) and a sample CSV
+```
+
+## Development
+
+```bash
+uv run pytest
+uv run ruff check
+```
+
+Runtime code uses only the Python standard library. The `llm` extra adds the Anthropic SDK for the model draft.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -1,11 +1,12 @@
 import datetime as dt
+from pathlib import Path
 
 import pytest
 from helpers import SITE, TODAY, daily
 
 from seo_engine import config
 from seo_engine.opportunities import expected_ctr, rank
-from seo_engine.search import Row, between, complete_weeks, is_brand, periods, total
+from seo_engine.search import CsvSource, Row, between, complete_weeks, is_brand, periods, total
 
 OCFG = config.DEFAULTS["opportunities"]
 END = TODAY - dt.timedelta(days=2)
@@ -79,3 +80,9 @@ def test_periods_and_complete_weeks():
     assert week == (dt.date(2026, 3, 2), dt.date(2026, 3, 8)) and before == (dt.date(2026, 2, 23), dt.date(2026, 3, 1))
     assert complete_weeks(dt.date(2026, 3, 9))[0][1] == dt.date(2026, 3, 8)  # Monday: yesterday closes the week
     assert len(between(daily("q", "/", 28, 0, 1, END), cur[0], cur[1])) == 28
+
+
+def test_the_example_csv_loads():
+    path = Path(__file__).resolve().parents[1] / "examples" / "search-console.csv"
+    rows = CsvSource(path).fetch(dt.date(2026, 3, 1), dt.date(2026, 3, 1))
+    assert len(rows) == 2 and rows[0].query == "water heater popping noise" and rows[0].position == 17.2

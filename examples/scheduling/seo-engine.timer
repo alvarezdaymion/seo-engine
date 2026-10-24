@@ -1,0 +1,9 @@
+[Unit]
+Description=Run seo-engine once a day
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
