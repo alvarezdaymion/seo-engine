@@ -127,7 +127,7 @@ def webhook_url(url: str | None = None) -> str:
     try:
         parsed = urllib.parse.urlsplit(url)
         valid = (parsed.scheme == "https" and bool(parsed.hostname) and parsed.port != 0
-                 and not parsed.username and not parsed.password and not parsed.fragment
+                 and parsed.username is None and parsed.password is None and not parsed.fragment
                  and not any(not 33 <= ord(c) <= 126 for c in url))
     except ValueError:
         valid = False

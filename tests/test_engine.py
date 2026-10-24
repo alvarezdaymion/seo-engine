@@ -131,6 +131,28 @@ def test_auto_merge_needs_publish_mode_live(tmp_path):
     assert not gates["publish mode"].get("ok") and r["status"] == "in_review"
 
 
+def test_merge_state_changing_after_gates_blocks_publication_and_keeps_reporting(tmp_path):
+    write_answer(tmp_path / "answers")
+    fake, review = github()
+    route = fake.route
+    reads = 0
+
+    def become_unstable(method, path, data, query):
+        nonlocal reads
+        if method == "GET" and path == "/pulls/1":
+            reads += 1
+            if reads == 2:
+                fake.pulls[1].update(mergeable_state="unstable")
+        return route(method, path, data, query)
+
+    fake.route = become_unstable
+    result, cfg = run(tmp_path, gh=review, review={**REVIEW, "auto_merge": True}, mode="force")
+    assert reads == 2 and result["blockers"] and result["status"] != "published"
+    assert "report" in result and not page_file(tmp_path).exists()
+    assert not any(method == "PUT" and path.endswith("/merge") for method, path, _ in fake.calls)
+    assert json.loads((cfg.state_dir / "last-run.json").read_text())["blockers"]
+
+
 # ---- live checks, rollback and repair ----------------------------------------------------
 
 def test_a_failed_live_check_rolls_the_publish_back(tmp_path):

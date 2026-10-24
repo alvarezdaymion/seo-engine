@@ -48,12 +48,17 @@ def _headers(headers: dict[str, str]) -> dict[str, str]:
     return headers
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes | None,
                      timeout: float) -> tuple[int, bytes]:
     try:
         req = urllib.request.Request(url, data=body, method=method, headers=_headers(headers))
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
@@ -92,12 +97,12 @@ class Http:
             if type(status) is not int or not 100 <= status <= 599:
                 raise ValueError("invalid response status")
             try:
-                data = json.loads(raw) if raw and status < 400 else None
+                data = json.loads(raw) if raw and 200 <= status < 300 else None
             except ValueError:
                 data = None
         except Exception:
             raise HttpError("HTTP request failed") from None
-        if status >= 400:
+        if not 200 <= status < 300:
             detail = "; authentication or permission denied" if status in (401, 403) else ""
             raise HttpError("HTTP request returned HTTP %d%s" % (status, detail), status)
         return data

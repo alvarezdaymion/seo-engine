@@ -36,6 +36,14 @@ def test_http_failures_omit_urls_and_provider_error_text(body):
     assert SECRET not in str(caught.value)
 
 
+@pytest.mark.parametrize("status", [100, 199, 300, 302, 307, 308, 399])
+def test_only_2xx_responses_are_successful(status):
+    client = Http(transport=lambda *args: (status, json.dumps({"message": SECRET}).encode()))
+    with pytest.raises(HttpError) as caught:
+        client.request("POST", URL)
+    assert caught.value.status == status and SECRET not in str(caught.value)
+
+
 def test_request_preparation_errors_are_sanitized_before_transport():
     calls = []
 

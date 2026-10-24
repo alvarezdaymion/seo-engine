@@ -1,7 +1,6 @@
 import pytest
 
 from seo_engine.demo import MemoryGitHub
-from seo_engine.http import HttpError
 from seo_engine.review import GitHubReview
 
 TOKEN = "test-token-not-real"
@@ -70,13 +69,35 @@ def test_gates_fail_on_missing_checks_and_unclean_merge_state():
     assert not gates["mergeable"].ok and "dirty" in gates["mergeable"].detail
 
 
-def test_a_merge_with_a_stale_head_is_refused_by_github():
+def test_a_merge_with_a_stale_head_is_refused_before_a_write():
     review, fake, _ = make()
     pr = open_one(review)
     fake.push(1, "answers/extra.html", "x")
-    with pytest.raises(HttpError) as e:
+    with pytest.raises(PermissionError) as e:
         review.merge(1, pr["head"], "title")
-    assert e.value.status == 409 and TOKEN not in str(e.value)
+    assert TOKEN not in str(e.value) and not any(m == "PUT" for m, _, _ in fake.calls)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("state", "closed"), ("state", None), ("merged", True), ("merged", None), ("merged", 0),
+    ("mergeable", False), ("mergeable", None), ("mergeable", 1),
+    ("mergeable_state", "unstable"), ("mergeable_state", "behind"), ("mergeable_state", None),
+    ("head.sha", "different-head"), ("head.sha", None),
+])
+def test_final_pr_read_must_confirm_a_clean_open_unmerged_expected_head(field, value):
+    review, fake, _ = make()
+    pr = open_one(review)
+    assert all(g.ok for g in review.gates(1, pr["head"], pr["files"], ["build"]))
+    if field == "head.sha":
+        fake.pulls[1]["head"]["sha"] = value
+    else:
+        fake.pulls[1][field] = value
+    fake.calls.clear()
+    before = dict(review.journal.records)
+    with pytest.raises(PermissionError):
+        review.merge(1, pr["head"], "Add recorded answer", branch=pr["branch"])
+    assert fake.calls and all(method == "GET" for method, _, _ in fake.calls)
+    assert review.journal.records == before
 
 
 @pytest.mark.parametrize("method,path,body", [

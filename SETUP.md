@@ -86,6 +86,8 @@ Repeat for a few days. Done when the owner is happy with the drafts.
 
 Done when a run opens a pull request and prints its merge gates. `auto-merge` (and `publish mode`, while in dry-run) fail by design; `checks` passes once CI has run on the branch.
 
+The final PR read before an automatic merge must confirm the expected head, an open and explicitly unmerged PR, `mergeable=true` and `mergeable_state="clean"`. A changed or missing result holds the merge without recording a write attempt. Recording, claims and ownership gates are reloaded after that read.
+
 ## 8. Go live
 
 Only when the owner explicitly asks:
@@ -106,7 +108,7 @@ Done when `state/last-run.json` updates each day.
 
 ## 10. Optional: deliver the weekly report
 
-Set `[report] send = "webhook"` and put a valid ASCII https incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Percent-encode any non-ASCII URL components. Test with `uv run seo-engine report --send`. Collection and delivery share the run lock; a lock or initialization failure prevents sending and does not consume the week's delivery. The command exits 1 on blockers. The report goes out on `[report] weekday`, at most once for each reporting week. If a response is lost, delivery stays held for reconciliation, including for another `report --send`. Malformed URLs are rejected before recording delivery intent, and request errors never include the URL or raw exception message.
+Set `[report] send = "webhook"` and put a valid ASCII https incoming-webhook URL in `SEO_ENGINE_REPORT_WEBHOOK` (Slack uses the default `payload_key = "text"`; Discord uses `"content"`). Percent-encode any non-ASCII URL components. Userinfo is forbidden, including empty forms such as `https://@hooks.example.com/path`; a rejected URL can be corrected without consuming the week's delivery attempt. Test with `uv run seo-engine report --send`. Collection and delivery share the run lock; a lock or initialization failure prevents sending and does not consume the week's delivery. The command exits 1 on blockers. The report goes out on `[report] weekday`, at most once for each reporting week. Only a 2xx response confirms delivery. Redirects are not followed, and any non-2xx response or lost response leaves delivery pending for reconciliation, including for another `report --send`. Malformed URLs are rejected before recording delivery intent, and request errors never include the URL or raw exception message.
 
 ## 11. Optional: the model draft
 

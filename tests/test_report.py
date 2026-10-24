@@ -1,4 +1,8 @@
 import datetime as dt
+import io
+import json
+import urllib.request
+import urllib.response
 from http.client import InvalidURL
 
 import pytest
@@ -112,3 +116,86 @@ def test_invalid_webhook_encoding_does_not_consume_delivery_intent(tmp_path, mon
     result = Engine(cfg, deps, today=TODAY).run(execute=False, report="force")
     assert result["blockers"] and "synthetic-secret" not in str(result)
     assert calls == [] and not (cfg.state_dir / "report-deliveries.json").exists()
+
+
+@pytest.mark.parametrize("status", [100, 199, 300, 302, 303, 307, 308, 399, 400, 503])
+def test_non_2xx_webhook_response_stays_pending_without_automatic_resend(tmp_path, monkeypatch, status):
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/synthetic-secret")
+    cfg = make_cfg(tmp_path, report={"send": "webhook"})
+    calls = []
+
+    def transport(*args):
+        calls.append(1)
+        return status, b'{"message": "synthetic-secret"}'
+
+    for _ in range(2):
+        result = Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY).run(
+            execute=False, report="force")
+        assert result["blockers"] and not result["report"]["sent"]
+        assert "synthetic-secret" not in json.dumps(result)
+    entries = json.loads((cfg.state_dir / "report-deliveries.json").read_text())
+    assert calls == [1] and all(entry["status"] == "pending" for entry in entries.values())
+
+
+@pytest.mark.parametrize("status", [200, 201, 202, 204, 299])
+def test_2xx_acknowledges_webhook_delivery_once(tmp_path, monkeypatch, status):
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/synthetic-secret")
+    cfg = make_cfg(tmp_path, report={"send": "webhook"})
+    calls = []
+
+    def transport(*args):
+        calls.append(1)
+        return status, b""
+
+    for _ in range(2):
+        result = Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY).run(
+            execute=False, report="force")
+        assert not result["blockers"] and result["report"]["sent"]
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("userinfo", ["@", ":@", "user@", ":password@", "user:password@"])
+def test_userinfo_is_rejected_before_journaling_and_a_corrected_url_can_send(tmp_path, monkeypatch, userinfo):
+    cfg = make_cfg(tmp_path, report={"send": "webhook"})
+    calls = []
+
+    def transport(*args):
+        calls.append(1)
+        return 204, b""
+
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://" + userinfo + "hooks.example.com/synthetic-secret")
+    result = Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY).run(
+        execute=False, report="force")
+    assert result["blockers"] and calls == [] and "synthetic-secret" not in json.dumps(result)
+    assert not (cfg.state_dir / "report-deliveries.json").exists()
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/synthetic-secret")
+    corrected = Engine(cfg, Deps(search=ListSource(), webhook=transport), today=TODAY).run(
+        execute=False, report="force")
+    assert not corrected["blockers"] and corrected["report"]["sent"] and calls == [1]
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_webhook_redirects_cannot_turn_into_a_successful_get(tmp_path, monkeypatch, status):
+    calls = []
+
+    class FakeHTTPS(urllib.request.HTTPSHandler):
+        def https_open(self, request):
+            calls.append(request.get_method())
+            code = status if len(calls) == 1 else 200
+            response = urllib.response.addinfourl(io.BytesIO(b""),
+                {"Location": "https://hooks.example.com/synthetic-secret/next"}, request.full_url, code)
+            response.msg = "Synthetic response"
+            return response
+
+    build_opener = urllib.request.build_opener
+
+    def fake_opener(*handlers):
+        return build_opener(urllib.request.ProxyHandler({}), *handlers, FakeHTTPS())
+
+    monkeypatch.setattr(urllib.request, "_opener", fake_opener())
+    monkeypatch.setattr(urllib.request, "build_opener", fake_opener)
+    monkeypatch.setenv("SEO_ENGINE_REPORT_WEBHOOK", "https://hooks.example.com/synthetic-secret")
+    cfg = make_cfg(tmp_path, report={"send": "webhook"})
+    result = Engine(cfg, Deps(search=ListSource()), today=TODAY).run(execute=False, report="force")
+    assert result["blockers"] and not result["report"]["sent"]
+    assert calls == ["POST"] and "synthetic-secret" not in json.dumps(result)

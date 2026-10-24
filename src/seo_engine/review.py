@@ -147,8 +147,14 @@ class GitHubReview:
         return out
 
     def merge(self, number: int, head: str, title: str, branch: str | None = None) -> str:
-        if not self.target_ok(self.pull(number), branch):
+        pr = self.pull(number)
+        if not isinstance(pr, dict) or not self.target_ok(pr, branch):
             raise PermissionError("refused merge: pull request repository or target branch changed or is missing")
+        if (not head or (pr.get("head") or {}).get("sha") != head or pr.get("state") != "open"
+                or pr.get("merged") is not False or pr.get("mergeable") is not True
+                or pr.get("mergeable_state") != "clean"):
+            raise PermissionError(
+                "refused merge: fresh pull request must be open, unmerged and clean on the expected head")
         self.before_merge()
         r = self._write("PUT", "%s/pulls/%d/merge" % (self.root, number),
                         {"sha": head, "merge_method": self.merge_method, "commit_title": title})
