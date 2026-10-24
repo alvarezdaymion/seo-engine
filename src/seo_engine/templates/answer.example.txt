@@ -1,0 +1,1 @@
+Paste the transcript of the recorded answer here, one paragraph per block. Keep the speaker's words as they were said. The engine drops filler sounds such as um and uh, leaves out every line listed under "cut" in the answer file, and never adds a word.

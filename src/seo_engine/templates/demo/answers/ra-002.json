@@ -1,0 +1,19 @@
+{
+  "id": "ra-002",
+  "question": "How much does a tankless water heater cost to install?",
+  "speaker": {
+    "name": "Jordan Sample",
+    "role": "Service manager"
+  },
+  "video_url": "https://videos.example.com/answers/ra-002.mp4",
+  "thumbnail_url": "https://videos.example.com/answers/ra-002.jpg",
+  "recorded_on": "2026-03-05",
+  "target_queries": [
+    "tankless water heater installation cost"
+  ],
+  "cut": [],
+  "sources": [],
+  "approval": {
+    "status": "recorded"
+  }
+}

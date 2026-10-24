@@ -1,0 +1,82 @@
+# seo-engine configuration. Copy to seo-engine.toml (`seo-engine init` does it) and edit.
+# Every value has a default in src/seo_engine/config.py; delete anything you don't need to change.
+# Credentials never go in this file. They come from environment variables (see .env.example).
+
+[site]
+name = "Your business"
+base_url = "https://www.example.com"   # the public origin; canonical URLs are built from it
+page_path = "/answers/{slug}/"         # where engine pages live. Shopify: "/pages/{slug}"
+brand_terms = ["your business"]        # queries containing these are brand searches, left out
+
+[search]
+source = "searchconsole"               # or "csv": daily rows date,query,page,clicks,impressions,position
+site_url = "sc-domain:example.com"     # the Search Console property
+days = 28                              # compare the last 28 days of final data with the 28 before
+country = ""                           # optional three-letter filter, for example "usa"
+csv = ""                               # path to the CSV when source = "csv"
+
+[opportunities]
+min_impressions = 50                   # ignore queries and pages with fewer impressions in the window
+no_page_position = 10                  # a query whose best page ranks below this has no page for it
+target_position = 5                    # where a new page could rank, used to size "no page" upside
+low_ctr_max_position = 10
+low_ctr_ratio = 0.5                    # low CTR = under half the expected CTR for the position
+slip_positions = 3                     # a page that lost this many positions is slipping
+# Rough organic CTR for positions 1-10, then 11-20 and 21+. Replace with your own numbers.
+ctr_curve = [0.28, 0.16, 0.11, 0.08, 0.06, 0.045, 0.035, 0.03, 0.025, 0.02]
+ctr_page_two = 0.01
+ctr_beyond = 0.004
+
+[answers]
+dir = "answers"                        # recorded answers: <id>.json plus <id>.txt (transcript)
+match_threshold = 0.6                  # how closely a recorded question must match a search query
+answer_sentences = 3                   # sentences in the direct answer at the top of the page
+
+[draft]
+mode = "template"                      # or "model": a model picks the answer sentences (uv sync --extra llm)
+model = "claude-opus-5-5"
+effort = "low"
+max_tokens = 4000
+fallbacks = true
+
+[claims]
+rules = "rules.toml"                   # the rule pack every page is checked against
+
+[review]
+enabled = false                        # true: every change is a GitHub pull request
+repo = ""                              # "owner/name" of the repo that holds the page files
+base = "main"
+path = ""                              # folder inside the repo for page files
+branch_prefix = "seo-engine/"
+auto_merge = false                     # true: merge when every gate passes (needs publish.mode = "live")
+required_checks = []                   # check-run names that must pass first, for example ["build"]
+merge_method = "squash"
+
+[publish]
+target = "static"                      # "static", "shopify", or "git" (the reviewed repo is the site)
+mode = "dry-run"                       # "live" lets the engine merge and publish
+max_new_pages_per_day = 1              # a ceiling, not a quota: idle days are normal
+
+[static]
+dir = "site"
+format = "html"                        # or "markdown": front matter plus the HTML body
+file = "answers/{slug}/index.html"     # markdown example: "content/answers/{slug}.md"
+
+[shopify]
+api_version = "2026-07"
+
+[livecheck]
+fetch_base = ""                        # "" checks the public URL; "http://127.0.0.1:8000" checks a
+                                       # preview server; "file" checks the file the static publisher wrote
+attempts = 3                           # tries after a publish, to let a CDN or deploy catch up
+wait_seconds = 10
+
+[report]
+weekday = "thursday"                   # final Search Console data for the past week is usually in by then
+send = "off"                           # or "webhook": post the report to SEO_ENGINE_REPORT_WEBHOOK
+payload_key = "text"                   # Slack-style webhooks read "text"; Discord reads "content"
+top_queries = 5
+
+[paths]
+state = "state"
+reports = "reports"

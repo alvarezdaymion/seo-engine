@@ -1,0 +1,30 @@
+{
+  "id": "ra-001",
+  "question": "Why is my water heater making a popping noise?",
+  "speaker": {
+    "name": "Alex Example",
+    "role": "Lead technician"
+  },
+  "video_url": "https://videos.example.com/answers/ra-001.mp4",
+  "thumbnail_url": "https://videos.example.com/answers/ra-001.jpg",
+  "recorded_on": "2026-02-24",
+  "target_queries": [
+    "water heater popping noise"
+  ],
+  "cut": [
+    "Honestly, if you flush it every year, that tank is guaranteed to last twenty years."
+  ],
+  "sources": [
+    {
+      "supports": "10 percent longer",
+      "title": "Water heater maintenance basics (example source)",
+      "url": "https://www.example.org/water-heater-maintenance"
+    }
+  ],
+  "approval": {
+    "status": "approved",
+    "by": "owner",
+    "on": "2026-03-02",
+    "transcript_sha256": "82e5f0bf2342ca89948d49e3421b1e4a6bc40f0dd6a742afacd889b16d9bba32"
+  }
+}
